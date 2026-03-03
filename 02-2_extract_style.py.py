@@ -4,8 +4,8 @@ from tqdm import tqdm
 import fugashi
 
 # ===== 設定 =====
-INPUT_JSON = "data/literature_1890_1945.json"
-OUTPUT_CSV = "data/features_style.csv" # 文体特徴は数値の表なのでCSVが扱いやすいです
+INPUT_JSON = "data/01_literature_1890_1945.json"
+OUTPUT_CSV = "data/02-2_features_style.csv" # 文体特徴は数値の表なのでCSVが扱いやすい
 
 # ===== 1. MeCab(fugashi)の初期化 =====
 print("形態素解析エンジン(MeCab)を初期化中...")

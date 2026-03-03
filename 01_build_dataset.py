@@ -10,7 +10,7 @@ import time
 
 # ===== 設定 =====
 CSV_PATH = "data/list_person_all_extended_utf8.csv"
-OUTPUT_JSON = "data/literature_1890_1945.json"
+OUTPUT_JSON = "data/01_literature_1890_1945.json"
 
 YEAR_MIN = 1890
 YEAR_MAX = 1945

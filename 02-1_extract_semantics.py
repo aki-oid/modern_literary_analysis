@@ -6,8 +6,8 @@ from sentence_transformers import SentenceTransformer
 import torch
 
 # ===== 設定 =====
-INPUT_JSON = "data/literature_1890_1945.json"
-OUTPUT_PKL = "data/features_semantics.pkl"
+INPUT_JSON = "data/01_literature_1890_1945.json"
+OUTPUT_PKL = "data/02-1_features_semantics.pkl"
 
 # モデル指定（日本語の汎用Sentence-BERT）
 MODEL_NAME = "sonoisa/sentence-bert-base-ja-mean-tokens-v2"
