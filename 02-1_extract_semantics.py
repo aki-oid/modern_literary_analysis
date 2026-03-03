@@ -67,3 +67,6 @@ df_features = pd.DataFrame(features)
 df_features.to_pickle(OUTPUT_PKL)
 
 print(f"\n完了: {len(df_features)}件の意味ベクトルを {OUTPUT_PKL} に保存しました。")
+
+df = pd.read_pickle("data/features_semantics.pkl")
+print(df.head())
