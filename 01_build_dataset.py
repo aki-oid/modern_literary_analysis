@@ -7,133 +7,160 @@ from tqdm import tqdm
 import zipfile
 import io
 import time
+import spacy
 
-# ===== 設定 =====
+# ===== 1. 設定 =====
 CSV_PATH = "data/list_person_all_extended_utf8.csv"
-OUTPUT_JSON = "data/01_literature_1890_1945.json"
+OUTPUT_JSON = "data/01_literature.json"
 
-YEAR_MIN = 1890
-YEAR_MAX = 1945
-DEATH_YEAR_MAX = 1955
-MAX_WORKS = 1000
-MAX_WORKS_PER_AUTHOR = 5
+YEAR_MIN = 1868
+YEAR_MAX = 1975
+MAX_WORKS_TOTAL = 2000
+MIN_WORKS_PER_AUTHOR = 3
+MAX_WORKS_PER_AUTHOR = 10
 
-# ===== CSV読み込み =====
-df = pd.read_csv(CSV_PATH, encoding="utf-8")
+PRIORITY_TITLES = [
+    "こころ", "吾輩は猫である", "坊っちゃん", "三四郎", "それから", "門", 
+    "羅生門", "蜘蛛の糸", "河童", "歯車", "或る阿呆の一生", "地獄変",
+    "舞姫", "高瀬舟", "阿部一族", "人間失格", "斜陽", "走れメロス",
+    "山月記", "李陵", "破戒", "蒲団", "高野聖", "金色夜叉", "或る女"
+]
 
-# ===== 年抽出 =====
+# NLPモデルのロード（人名抽出用）
+print("NLPモデルをロード中...")
+nlp = spacy.load("ja_ginza") 
+
+# 旧字→新字変換用マッピング（より網羅的に拡充）
+OLD_KANJI = "體國會實氣獨與變寫廣讀學禮盡驛廣鐵應觀歸舊晝顯燒條狀乘淨眞粹體"
+NEW_KANJI = "体国会実気独与変写広読学礼尽駅広鉄応観帰旧昼顕焼条状乗浄真粋体"
+KANJI_TABLE = str.maketrans(OLD_KANJI, NEW_KANJI)
+
+# ===== 2. 前処理関数 =====
 def extract_year(text):
-    if pd.isna(text):
-        return None
+    if pd.isna(text): return None
     match = re.search(r"\d{4}", str(text))
     return int(match.group()) if match else None
 
-df["first_pub_year"] = df["初出"].apply(extract_year)
-df["teihon_year"] = df["底本初版発行年1"].apply(extract_year)
-df["year"] = df["first_pub_year"].fillna(df["teihon_year"])
-df["death_year"] = pd.to_datetime(df["没年月日"], errors="coerce").dt.year
-
-# ===== フィルタ =====
-df = df[df["分類番号"].str.contains(r"NDC 91", na=False)]
-df = df[
-    (df["year"].between(YEAR_MIN, YEAR_MAX)) &
-    (df["death_year"] <= DEATH_YEAR_MAX)
-]
-df = df[df["役割フラグ"] == "著者"]
-df = df[df["人物著作権フラグ"] == "なし"]
-
-# 作家名の結合（欠損値対策済）
-df["author"] = df["姓"].fillna("") + df["名"].fillna("")
-# 作家ごとに5作品を絞る「前」に、同作家の同名作品を排除する
-df = df.drop_duplicates(subset=["author", "作品名"], keep="first")
-
-# その後で年代順ソートと上限カットを行う
-df = df.sort_values("year")
-df = df.groupby("author").head(MAX_WORKS_PER_AUTHOR)
-
-# 全体上限
-if len(df) > MAX_WORKS:
-    df = df.head(MAX_WORKS)
-
-print("抽出予定作品数:", len(df))
-
-# ===== テキストDL & 解凍（リトライ機能付き） =====
-def download_and_extract(url, retries=3):
-    for i in range(retries):
-        try:
-            # タイムアウトを30秒に延長
-            r = requests.get(url, timeout=30)
-            r.raise_for_status() # HTTPエラー（404など）があれば例外を出す
-            
-            z = zipfile.ZipFile(io.BytesIO(r.content))
-            for name in z.namelist():
-                if name.endswith(".txt"):
-                    # shift_jisより安全なcp932を使用
-                    return z.read(name).decode("cp932", errors="ignore")
-        except requests.exceptions.RequestException as e:
-            print(f"通信エラー({url}) - リトライ {i+1}/{retries}: {e}")
-            time.sleep(2) # 2秒待ってから再挑戦
-        except Exception as e:
-            print(f"解凍・読込エラー({url}): {e}")
-            return None
-    
-    # 規定回数リトライしてもダメだった場合
-    print(f"ダウンロード失敗（スキップします）: {url}")
-    return None
-
 def clean_text(text):
-    # 1. ヘッダー・フッターの除去
-    # 青空文庫は末尾の「底本：」以降が書誌情報・入力者情報
     text = re.split(r'\n底本：', text)[0]
-    
-    # ヘッダー（ハイフン等の連続線）の除去
     borders = list(re.finditer(r'-{10,}', text))
-    if len(borders) >= 2:
-        text = text[borders[1].end():]
-    elif len(borders) == 1:
-        text = text[borders[0].end():]
-
-    # 2. ルビと注記の除去
-    text = re.sub(r"《.*?》", "", text)      # ルビ除去
-    text = re.sub(r"［＃.*?］", "", text)    # 注記除去
-    text = re.sub(r"｜", "", text)           # ルビ開始記号の除去
-    text = re.sub(r"\r", "", text)           # CR除去
-
+    if len(borders) >= 2: text = text[borders[1].end():]
+    text = re.sub(r"《.*?》|［＃.*?］|｜|\r", "", text)
     return text.strip()
 
-dataset = []
-error_count = 0
-empty_count = 0
-
-# ===== データ取得 =====
-for _, row in tqdm(df.iterrows(), total=len(df)):
-    url = row["テキストファイルURL"]
-    if pd.isna(url):
-        continue
-
-    text = download_and_extract(url)
-    if text is None:
-        error_count += 1
-        continue
-
-    text = clean_text(text)
+def process_text_variants(text):
+    """
+    1. 人名を除去したテキスト
+    2. 抽出された人名リスト
+    3. 旧字を正規化したテキスト
+    を作成する。Sudachiの制限を避けるため、テキストを分割して処理。
+    """
+    # 1チャンクあたりの文字数（安全のため10,000文字程度に設定）
+    CHUNK_SIZE = 10000
+    chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)]
     
-    if not text:
-        empty_count += 1
-        continue
+    all_person_names = []
+    processed_no_person_chunks = []
+    
+    for chunk in chunks:
+        doc = nlp(chunk)
+        # 人名を抽出（後ろから置換してインデックスずれを防ぐ）
+        entities = sorted([ent for ent in doc.ents if ent.label_ == "Person"], key=lambda x: x.start_char, reverse=True)
+        
+        chunk_no_person = chunk
+        for ent in entities:
+            all_person_names.append(ent.text)
+            chunk_no_person = chunk_no_person[:ent.start_char] + chunk_no_person[ent.end_char:]
+        
+        processed_no_person_chunks.append(chunk_no_person)
+    
+    text_no_person = "".join(processed_no_person_chunks)
+    text_normalized = text_no_person.translate(KANJI_TABLE)
+    
+    return {
+        "original": text,
+        "no_person": text_no_person,
+        "normalized": text_normalized,
+        "person_names": list(set(all_person_names))
+    }
+
+# ===== 3. データ読み込みとスコアリング =====
+print("CSVを読み込み中...")
+df = pd.read_csv(CSV_PATH, encoding="utf-8")
+df["year"] = df["初出"].apply(extract_year).fillna(df["底本初版発行年1"].apply(extract_year))
+df["author"] = df["姓"].fillna("") + df["名"].fillna("")
+
+# 重複排除用の「クリーンなタイトル」を作成 (例: "こころ(新字新仮名)" -> "こころ")
+df["title_clean"] = df["作品名"].str.replace(r"\(.*?\)|（.*?）", "", regex=True).str.strip()
+
+# フィルタリング
+df = df[
+    (df["分類番号"].str.contains(r"NDC 913", na=False)) &
+    (df["役割フラグ"] == "著者") &
+    (df["人物著作権フラグ"] == "なし") &
+    (df["テキストファイルURL"].notna()) &
+    (df["year"] >= YEAR_MIN) & (df["year"] <= YEAR_MAX)
+]
+
+def calculate_priority(row):
+    score = 0
+    if row["title_clean"] in PRIORITY_TITLES: score += 1000
+    if pd.notna(row.get("テキストファイルURL")): score += 100
+    if pd.notna(row.get("初出")): score += 50
+    if "全集" in str(row.get("底本名1", "")): score += 20
+    return score
+
+df["priority"] = df.apply(calculate_priority, axis=1)
+# 重複削除: 著者名とクリーンなタイトルの組み合わせで、最も優先度が高いものだけ残す
+df = df.sort_values("priority", ascending=False).drop_duplicates(subset=["author", "title_clean"])
+
+# 作家あたりの最低作品数でフィルタリング
+author_counts = df["author"].value_counts()
+valid_authors = author_counts[author_counts >= MIN_WORKS_PER_AUTHOR].index
+df = df[df["author"].isin(valid_authors)].copy()
+
+# 作家あたりの上限
+df = df.groupby("author").head(MAX_WORKS_PER_AUTHOR)
+
+# 全体の上限
+df = df.head(MAX_WORKS_TOTAL)
+
+# ===== 4. ダウンロードと多層プロセシング =====
+def download_and_extract(url):
+    try:
+        r = requests.get(url, timeout=20)
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            for name in z.namelist():
+                if name.endswith(".txt"):
+                    return z.read(name).decode("cp932", errors="ignore")
+    except: return None
+    return None
+
+dataset = []
+print(f"{len(df)}作品の抽出・多層プロセシングを開始します...")
+
+for _, row in tqdm(df.iterrows(), total=len(df)):
+    raw_text = download_and_extract(row["テキストファイルURL"])
+    if not raw_text: continue
+    
+    clean = clean_text(raw_text)
+    if len(clean) < 100: continue
+
+    # 多層プロセシング（人名除去、正規化、人名リスト抽出）
+    variants = process_text_variants(clean)
 
     dataset.append({
         "title": row["作品名"],
         "author": row["author"],
         "year": int(row["year"]),
-        "text": text
+        "text_original": variants["original"],
+        "text_no_person": variants["no_person"],
+        "text_normalized": variants["normalized"],
+        "person_names": variants["person_names"]
     })
-    
-    # サーバー負荷軽減のためのスリープ（必須）
-    time.sleep(1)
+    #time.sleep(0.1)
 
-# ===== 保存 =====
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
     json.dump(dataset, f, ensure_ascii=False, indent=2)
 
-print(f"\n完了: 保存 {len(dataset)}件, DLエラー {error_count}件, 本文消失 {empty_count}件")
+print(f"\n完了: {len(dataset)}件の多層構造データを '{OUTPUT_JSON}' に保存しました。")
