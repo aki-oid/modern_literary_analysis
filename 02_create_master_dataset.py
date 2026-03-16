@@ -55,7 +55,7 @@ def load_and_merge():
     
     print(f"統合完了: 全 {len(master)} 作品, {len(master.columns)} 特徴量")
     
-    # 5. 保存 (Excelでの閲覧用に utf-8-sig)
+    # 5. 保存
     master.to_csv(OUTPUT_MASTER, index=False, encoding="utf-8-sig")
     print(f"マスターデータセットを保存しました: {OUTPUT_MASTER}")
 
