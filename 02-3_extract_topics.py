@@ -8,111 +8,226 @@ from tqdm import tqdm
 import fugashi
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.model_selection import train_test_split
 
-# ===== 設定 =====
-INPUT_JSON = "data/01_literature.json"
-OUTPUT_CSV = "data/02-3_features_topics.csv"
-PLOT_DIR = "data/plots/"
-os.makedirs(PLOT_DIR, exist_ok=True)
-
-NUM_TOPICS = 10
-plt.rcParams['font.family'] = 'MS Gothic'
-
-# ===== 1. 形態素解析と名詞抽出 =====
-print("形態素解析エンジン(MeCab)を初期化中...")
-tagger = fugashi.Tagger()
-
-STOP_WORDS = {
-    "こと", "もの", "自分", "ところ", "ため", "二人", "一人", "まま", "うち", 
-    "とき", "やつ", "なか", "あと", "わけ", "今日", "先生", "言葉", "人間",
-    "あり", "なし", "つた", "つて", "なかつ", "それ", "これ", "あれ", "どれ",
-    "もん", "ほう", "あたり", "まゝ", "今度", "相手", "主人", "夫人", "子供", "旦那",
-    "そう", "こう", "ああ", "どう", "ため", "よう", "さん"
+# ===== 0. 研究環境の定義（Reproducibility & Standards） =====
+# 再現性確保のため、乱数シードおよびアルゴリズムのパラメータを固定
+CONFIG = {
+    "input_file": "data/01_literature.json",
+    "output_file": "data/02-3_features_topics.csv",
+    "plot_dir": "data/plots/",
+    "num_topics": 8,
+    "random_seed": 42,
+    "max_iter": 50,  # EMアルゴリズムが十分収束する反復回数
+    "doc_topic_prior": 0.1,  # Alpha: 文書ごとのトピック分布のスパース性（1未満で少数のトピックに集中）
+    "topic_word_prior": 0.01 # Beta/Eta: トピックごとの単語分布のスパース性（より限定的な語彙を重視）
 }
 
-def extract_nouns(text):
-    if not text: return ""
-    nouns = []
+os.makedirs(CONFIG["plot_dir"], exist_ok=True)
+plt.rcParams['font.family'] = 'MS Gothic' # 環境に合わせて調整
+
+# ===== 1. 言語学的処理：精密な形態素解析（Linguistic Preprocessing） =====
+tagger = fugashi.Tagger()
+
+# 学術的基準に基づくストップワード
+# Zipfの法則に従い高頻度かつ無意味な語、およびドメイン特有の定型語を除外
+ACADEMIC_STOP_WORDS = {
+    "こと", "もの", "自分", "ため", "とき", "よう", "ほう", "わけ", "なか", "ところ",
+    "それ", "これ", "あれ", "どれ", "ここ", "そこ", "あそこ", "どこ",
+    "さん", "くん", "ちゃん", "ある", "いる", "なる", "する", "みる", "いく", "くる"
+}
+
+def extract_academic_lemmas(text):
+    """
+    形態素解析の学術的妥当性を確保：
+    1. 表層形ではなく『語彙素（Lemma）』を使用し、表記揺れや活用を吸収
+    2. 内容語（Content Words）である「名詞」「動詞」「形容詞」に限定
+    3. 数詞、代名詞、非自立語、接尾辞を厳密に除外
+    """
+    if not text or not isinstance(text, str): return ""
+    
+    tokens = []
     for word in tagger(text):
-        if word.feature.pos1 == "名詞":
-            surface = word.surface
-            if word.feature.pos2 not in ["数詞", "代名詞", "非自立"] and surface not in STOP_WORDS:
-                if len(surface) > 1:
-                    nouns.append(surface)
-    return " ".join(nouns)
+        pos = word.feature.pos1
+        pos_detail = word.feature.pos2
+        
+        # 抽出対象：意味を担う内容語に限定
+        if pos in ["名詞", "動詞", "形容詞"]:
+            # 除外対象：分析にノイズを与える機能語的要素
+            if pos_detail not in ["数詞", "代名詞", "非自立", "接尾"]:
+                # UniDicの語彙素(lemma)を取得。なければ表層形
+                lemma = word.feature.lemma if word.feature.lemma else word.surface
+                # ハイフン区切りの語彙素（例：見上げる-見る）から先頭を取得
+                lemma = lemma.split("-")[0] 
+                
+                # 長さ制約とストップワード処理
+                if len(lemma) > 1 and lemma not in ACADEMIC_STOP_WORDS:
+                    tokens.append(lemma)
+                    
+    return " ".join(tokens)
 
-# ===== 2. データの準備 =====
-print("データを読み込み、名詞を抽出しています...")
-with open(INPUT_JSON, "r", encoding="utf-8") as f:
-    dataset = json.load(f)
+# ===== 2. データの構造化（Data Preparation） =====
+print("Loading dataset and performing linguistic analysis...")
+with open(CONFIG["input_file"], "r", encoding="utf-8") as f:
+    df = pd.DataFrame(json.load(f))
 
-df = pd.DataFrame(dataset)
-tqdm.pandas()
-df["nouns"] = df["text_normalized"].progress_apply(extract_nouns)
+tqdm.pandas(desc="Linguistic Processing")
+df["processed_text"] = df["text_normalized"].progress_apply(extract_academic_lemmas)
 
-# ===== 3. LDAモデルの学習 =====
-print("トピックモデル(LDA)を作成中...")
-vectorizer = CountVectorizer(max_df=0.9, min_df=5, max_features=5000)
-dtm = vectorizer.fit_transform(df["nouns"])
+# ===== 3. 統計的モデル構築：LDA（Probabilistic Topic Modeling） =====
+# 文書頻度（DF）に基づく次元削減（Zipfの法則に基づくカットオフ）
+vectorizer = CountVectorizer(
+    max_df=0.7,  # コーパスの70%以上に出現する一般的な語（ストップワード漏れ等）を排除
+    min_df=5,    # 5文書未満にしか出現しない低頻度語（外れ値・誤字）を排除
+    max_features=5000 # 特徴量空間の適正化
+)
+dtm = vectorizer.fit_transform(df["processed_text"])
 
-# トピックラベルの作成（特徴語の上位3つをラベルにする）
-feature_names = vectorizer.get_feature_names_out()
+print(f"Executing LDA with {CONFIG['num_topics']} topics...")
+lda = LatentDirichletAllocation(
+    n_components=CONFIG["num_topics"],
+    doc_topic_prior=CONFIG["doc_topic_prior"],
+    topic_word_prior=CONFIG["topic_word_prior"],
+    learning_method='batch', # データ全体を用いた厳密な変分推論
+    max_iter=CONFIG["max_iter"],
+    random_state=CONFIG["random_seed"],
+    n_jobs=-1
+)
 
-print(f"LDAモデル(トピック数: {NUM_TOPICS})を学習中...")
-lda = LatentDirichletAllocation(n_components=NUM_TOPICS, random_state=42, learning_method='batch')
 doc_topic_dist = lda.fit_transform(dtm)
 
-print("\n" + "="*30)
-print("【各トピックの詳細分析：上位15語】")
-print("="*30)
+# 訓練データに対する評価指標
+print(f"Training Log Likelihood: {lda.score(dtm):.2f}")
+print(f"Training Perplexity: {lda.perplexity(dtm):.2f}")
+
+# ===== 4. 分析結果の解釈と保存（Interpretation） =====
+feature_names = vectorizer.get_feature_names_out()
 topic_labels = []
-for topic_idx, topic in enumerate(lda.components_):
-    # コンソール出力用（上位15語）
-    top_indices = topic.argsort()[:-16:-1]
-    top_features_15 = [feature_names[i] for i in top_indices]
-    print(f"トピック {topic_idx:02}: {', '.join(top_features_15)}")
-    
-    # グラフ凡例用（上位5語）
-    top_features_5 = top_features_15[:5]
-    topic_labels.append(f"T{topic_idx}: " + "/".join(top_features_5))
-print("="*60 + "\n")
 
-# ===== 4. 結果の保存 =====
-for i in range(NUM_TOPICS):
+print("\n" + "="*40)
+print("TOPIC ANALYSIS: TOP TERMS")
+print("="*40)
+for i, topic in enumerate(lda.components_):
+    # トピック内の単語重要度（確率分布）が高い順に抽出
+    top_indices = topic.argsort()[:-11:-1]
+    top_terms = [feature_names[j] for j in top_indices]
+    label = f"T{i:02}: " + "/".join(top_terms[:3])
+    topic_labels.append(label)
+    print(f"[{i:02}] {', '.join(top_terms)}")
+
+# トピック分布のDataFrame結合
+for i in range(CONFIG["num_topics"]):
     df[f"Topic_{i}"] = doc_topic_dist[:, i]
+# --- データフレーム全体の改行コードをスペースに置換 ---
+df = df.replace({'\n': ' ', '\r': ' '}, regex=True)
+df.to_csv(CONFIG["output_file"], index=False, encoding="utf-8-sig")
 
-save_cols = ["title", "author", "year"] + [f"Topic_{i}" for i in range(NUM_TOPICS)]
-df[save_cols].to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+# ===== 5. 通時的分析：トピック・ダイナミクス（Diachronic Analysis） =====
+# 1. 1年単位で平均値を集計
+topic_cols = [f"Topic_{i}" for i in range(CONFIG["num_topics"])]
+df_yearly = df.groupby('year')[topic_cols].mean()
 
-# ===== 5. 可視化：年代別トピックシェアの変遷 =====
-print("年代別トピック推移グラフを生成中...")
+# 2. 移動平均の計算（「見やすさ」のための平滑化）
+# window=5 は「前後5年間の平均」をとる設定です。
+window_size = 3
+df_trend_smooth = df_yearly.rolling(window=window_size, center=True, min_periods=1).mean()
 
-# 10年単位の年代（Decade）カラムを作成
-df['decade'] = (df['year'] // 10) * 10
-topic_cols = [f"Topic_{i}" for i in range(NUM_TOPICS)]
+# 3. 可視化
+plt.figure(figsize=(15, 7), dpi=150)
+colors = sns.color_palette(n_colors=CONFIG["num_topics"])
 
-# 年代ごとに各トピックの平均値を集計
-df_trend = df.groupby('decade')[topic_cols].mean()
+for i, col in enumerate(topic_cols):
+    plt.plot(
+        df_trend_smooth.index, 
+        df_trend_smooth[col], 
+        marker='',
+        linewidth=2.5,
+        alpha=0.9,
+        label=topic_labels[i], 
+        color=colors[i]
+    )
 
-# プロット
-plt.figure(figsize=(15, 9))
-colors = sns.color_palette("tab10", NUM_TOPICS)
+plt.title(f"Yearly Trend of Topic Popularity ({window_size}-year Moving Average)", fontsize=16, pad=20)
+plt.xlabel("Year", fontsize=12)
+plt.ylabel("Mean Topic Probability", fontsize=12)
 
-# 積層グラフ作成
-plt.stackplot(df_trend.index, df_trend.T, labels=topic_labels, colors=colors, alpha=0.8)
+# 凡例を整理して右側に配置
+plt.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), title="Topics", frameon=False, fontsize=10)
 
-plt.title("日本近代文学におけるトピック変遷 (1868-1975)", fontsize=16, pad=20)
-plt.xlabel("年代 (10年単位)", fontsize=12)
-plt.ylabel("トピックの相対的なシェア", fontsize=12)
-plt.xlim(df['year'].min(), df['year'].max())
-plt.ylim(0, 1)
+# X軸の目盛りを5年刻みにして見やすくする
+start_year = int(df['year'].min())
+end_year = int(df['year'].max())
+plt.xticks(np.arange(start_year, end_year + 1, 5), rotation=45)
 
-# 凡例をグラフの右側に詳細に表示
-plt.legend(loc='upper left', bbox_to_anchor=(1, 1), fontsize=9, title="トピック(上位5語)")
-
-plt.grid(axis='x', linestyle='--', alpha=0.4)
+plt.grid(True, linestyle=':', alpha=0.6)
 plt.tight_layout()
-plt.savefig(f"{PLOT_DIR}02-3_topic_evolution_stacked.png")
+
+# 保存
+plt.savefig(f"{CONFIG['plot_dir']}02-3-1_yearly_topic_trend.png")
 plt.show()
 
-print(f"完了！詳細なトピック分析結果とグラフを保存しました。")
+# ===== 6. 代表的文書の特定（Exemplary Document Extraction） =====
+print("\n" + "="*40)
+print("REPRESENTATIVE WORKS PER TOPIC")
+print("="*40)
+
+for i in range(CONFIG["num_topics"]):
+    print(f"\n{topic_labels[i]}")
+    # 各トピックへの適合度が最も高い文書を抽出（質的分析への接続）
+    top_works = df.nlargest(10, f"Topic_{i}")
+    for _, row in top_works.iterrows():
+        print(f" - {row[f'Topic_{i}']:0.3f}: {row['title']} ({row['author']}, {int(row['year'])})")
+
+print(f"\nAnalysis complete. Results saved in {CONFIG['output_file']}")
+
+
+# ===== 7. トピック数 K の評価（Model Selection） =====
+# 候補となるトピック数の範囲
+k_candidates = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
+perplexity_scores = []
+log_likelihood_scores = []
+
+print("\nSearching for the optimal number of topics (K)...")
+
+# 学術的妥当性：過学習を防ぐため、モデル評価は必ずホールドアウト（テスト）データで行う
+dtm_train, dtm_test = train_test_split(dtm, test_size=0.2, random_state=CONFIG["random_seed"])
+
+for k in tqdm(k_candidates, desc="Evaluating K"):
+    lda_eval = LatentDirichletAllocation(
+        n_components=k,
+        learning_method='batch',
+        max_iter=30, # 探索用のため反復回数を絞る
+        random_state=CONFIG["random_seed"],
+        n_jobs=-1
+    )
+    # 学習は訓練データでのみ実行
+    lda_eval.fit(dtm_train)
+    
+    # 評価は未知のテストデータに対して実行（汎化性能の計測）
+    log_likelihood_scores.append(lda_eval.score(dtm_test))
+    perplexity_scores.append(lda_eval.perplexity(dtm_test))
+
+# ===== 8. 評価指標の可視化（Elbow Method） =====
+fig, ax1 = plt.subplots(figsize=(10, 6))
+
+# Log-Likelihoodのプロット（高いほど良い）
+color = 'tab:blue'
+ax1.set_xlabel('Number of Topics (K)')
+ax1.set_ylabel('Log-Likelihood (Held-out)', color=color)
+ax1.plot(k_candidates, log_likelihood_scores, marker='o', color=color, label='Log-Likelihood')
+ax1.tick_params(axis='y', labelcolor=color)
+
+# Perplexityのプロット（低いほど良い）
+ax2 = ax1.twinx()
+color = 'tab:red'
+ax2.set_ylabel('Perplexity (Held-out)', color=color)
+ax2.plot(k_candidates, perplexity_scores, marker='s', color=color, label='Perplexity')
+ax2.tick_params(axis='y', labelcolor=color)
+
+plt.title("Evaluation of LDA Topic Models by Topic Count (K) on Held-out Data", fontsize=14)
+fig.tight_layout()
+plt.grid(True, linestyle='--', alpha=0.5)
+plt.savefig(f"{CONFIG['plot_dir']}02-3-2_model_selection_metrics.png")
+plt.show()
+
+print("Evaluation complete. Identify the 'elbow' where the improvement plateaus on the test data.")
