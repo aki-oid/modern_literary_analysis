@@ -1,5 +1,6 @@
 # 2-1.「物語の軌跡（Narrative Trajectory）」や「物語の弧（Narrative Arc）」を計算機で解明しようとする
 # 2-1b. 軌跡データを用いて「物語の形（Narrative Shape）」のクラスタリングと代表作抽出を行うコード
+import os
 import json
 import pandas as pd
 import numpy as np
@@ -7,17 +8,13 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-import os
+from config import *
 
 # ===== config =====
-INPUT_JSON = "data/01_literature.json"
-INPUT_PKL = "data/02-1a_narrative_trajectories.pkl"
-CSV_OUTPUT = "data/02-1b_clustering_results.csv"
-PLOT_DIR = "data/plots/"
-os.makedirs(PLOT_DIR, exist_ok=True)
-
-NUM_CLUSTERS = 5
-NUM_SEGMENTS = 20
+INPUT_JSON = D01_LITERATURE
+INPUT_PKL = D021a_TRAJECTORY
+OUTPUT_CSV = D021b_TRAJECTORY
+ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 # ===== 1. JSONから文字数を取得し、分類を付与 =====
 print(f"JSONデータを読み込み中: {INPUT_JSON}")
@@ -285,18 +282,16 @@ for i, cat in enumerate(categories_to_plot):
 
 plt.tight_layout()
 plt.suptitle("テキスト長による物語の軌跡の比較（短編 vs 中長編）", fontsize=18, y=1.02)
-save_path = f"{PLOT_DIR}02-1b_Shape_Comparison.png"
-plt.savefig(save_path, dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}_Shape_Comparison.png"), dpi=300, bbox_inches='tight')
 plt.show()
-
-print(f"\n保存完了: {save_path}")
+print(f"\n保存完了: {os.path.join(PLOT_DIR, f'{ID_FILE}_Shape_Comparison.png')}")
 
 # ===== 4. クラスタリング結果のCSV保存 =====
 df_final_csv = pd.concat(all_cluster_results, ignore_index=True)
 df_final_csv = df_final_csv.sort_values(by=["length_category", "shape_name", "distance_to_center"])
-df_final_csv.to_csv(CSV_OUTPUT, index=False, encoding="utf-8-sig")
+df_final_csv.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
-print(f"CSV保存完了: {CSV_OUTPUT}")
+print(f"CSV保存完了: {OUTPUT_CSV}")
 print("\n"+"="*50)
 print("すべての処理が完了しました。")
 print("="*50)

@@ -8,13 +8,12 @@ import zipfile
 import io
 import time
 import spacy
+from config import *
 
 # ===== 1. 設定 =====
-CSV_PATH = "data/list_person_all_extended_utf8.csv"
-OUTPUT_JSON = "data/01_literature.json"
+INPUT_CSV = D00_INPUT_DATA
+OUTPUT_JSON = D01_LITERATURE
 
-YEAR_MIN = 1868
-YEAR_MAX = 1975
 MAX_WORKS_TOTAL = 2000
 MIN_WORKS_PER_AUTHOR = 3
 MAX_WORKS_PER_AUTHOR = 10
@@ -86,7 +85,7 @@ def process_text_variants(text):
 
 # ===== 3. データ読み込みとスコアリング =====
 print("CSVを読み込み中...")
-df = pd.read_csv(CSV_PATH, encoding="utf-8")
+df = pd.read_csv(INPUT_CSV, encoding="utf-8")
 df["year"] = df["初出"].apply(extract_year).fillna(df["底本初版発行年1"].apply(extract_year))
 df["author"] = df["姓"].fillna("") + df["名"].fillna("")
 

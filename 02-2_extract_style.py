@@ -1,3 +1,4 @@
+import os
 import json
 import pandas as pd
 import re
@@ -6,15 +7,14 @@ import fugashi
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 import unicodedata
 from matplotlib.ticker import ScalarFormatter
+from config import *
 
 # ===== 1. 設定 & 定数 =====
-INPUT_JSON = "data/01_literature.json"
-OUTPUT_CSV = "data/02-2_features_style.csv"
-PLOT_DIR = "data/plots/"
-os.makedirs(PLOT_DIR, exist_ok=True)
+INPUT_JSON = D01_LITERATURE
+OUTPUT_CSV = D022_STYLE
+ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'MS Gothic'
@@ -161,7 +161,7 @@ ax1.set_ylabel("構成比")
 ax1.legend(loc="upper left")
 ax2.legend(loc="upper right")
 plt.grid(axis='y', alpha=0.3)
-plt.savefig(f"{PLOT_DIR}02-2-1_word_origin_stack.png")
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-1_word_origin_stack.png"), dpi=300, bbox_inches='tight')
 
 # [Graph 2: 語彙多様度の年代別プロット]
 plt.figure(figsize=(12, 6))
@@ -169,7 +169,7 @@ scatter = plt.scatter(df["year"], df["語彙多様度_MATTR"], c=df["漢語比�
 plt.colorbar(scatter, label="漢語比率")
 sns.regplot(data=df, x="year", y="語彙多様度_MATTR", scatter=False, color="black", line_kws={"ls":"--"})
 plt.title("年代別語彙多様度 (MATTR500) と漢語依存度の相関", fontsize=14)
-plt.savefig(f"{PLOT_DIR}02-2-2_vocabulary_mattr_enhanced.png")
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-2_vocabulary_mattr_enhanced.png"), dpi=300, bbox_inches='tight')
 
 # [Graph 3: 文章の近代化指標]
 fig, ax3 = plt.subplots(figsize=(12, 6))
@@ -179,6 +179,5 @@ sns.lineplot(data=df_rolling, x="year", y="旧字比率", ax=ax4, color="#5c2a9d
 ax3.set_title("文長と表記（旧字）の近代化相関", fontsize=14)
 ax3.set_ylabel("平均文長 (文字)")
 ax4.set_ylabel("旧字比率")
-plt.savefig(f"{PLOT_DIR}02-2-3_modernization_trend.png")
-
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-3_modernization_trend.png"), dpi=300, bbox_inches='tight')
 print(f"全解析完了。結果は {OUTPUT_CSV} および {PLOT_DIR} に保存されました。")

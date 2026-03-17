@@ -1,35 +1,32 @@
+import os
 import json
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-import os
 from tqdm import tqdm
 import fugashi
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
 from sklearn.model_selection import train_test_split
+from config import *
 
-# ===== 0. 研究環境の定義（Reproducibility & Standards） =====
-# 再現性確保のため、乱数シードおよびアルゴリズムのパラメータを固定
+# ===== config =====
+INPUT_JSON = D01_LITERATURE
+OUTPUT_CSV = D023_TOPIC
+ID_FILE = get_file_prefix(os.path.basename(__file__))
+
 CONFIG = {
-    "input_file": "data/01_literature.json",
-    "output_file": "data/02-3_features_topics.csv",
-    "plot_dir": "data/plots/",
-    "num_topics": 8,
     "random_seed": 42,
     "max_iter": 50,  # EMアルゴリズムが十分収束する反復回数
     "doc_topic_prior": 0.1,  # Alpha: 文書ごとのトピック分布のスパース性（1未満で少数のトピックに集中）
     "topic_word_prior": 0.01 # Beta/Eta: トピックごとの単語分布のスパース性（より限定的な語彙を重視）
 }
-
-os.makedirs(CONFIG["plot_dir"], exist_ok=True)
 plt.rcParams['font.family'] = 'MS Gothic' # 環境に合わせて調整
 
 # ===== 1. 言語学的処理：精密な形態素解析（Linguistic Preprocessing） =====
 tagger = fugashi.Tagger()
 
-# 学術的基準に基づくストップワード
 # Zipfの法則に従い高頻度かつ無意味な語、およびドメイン特有の定型語を除外
 ACADEMIC_STOP_WORDS = {
     "こと", "もの", "自分", "ため", "とき", "よう", "ほう", "わけ", "なか", "ところ",
@@ -68,7 +65,7 @@ def extract_academic_lemmas(text):
 
 # ===== 2. データの構造化（Data Preparation） =====
 print("Loading dataset and performing linguistic analysis...")
-with open(CONFIG["input_file"], "r", encoding="utf-8") as f:
+with open(INPUT_JSON, "r", encoding="utf-8") as f:
     df = pd.DataFrame(json.load(f))
 
 tqdm.pandas(desc="Linguistic Processing")
@@ -83,9 +80,9 @@ vectorizer = CountVectorizer(
 )
 dtm = vectorizer.fit_transform(df["processed_text"])
 
-print(f"Executing LDA with {CONFIG['num_topics']} topics...")
+print(f"Executing LDA with {NUM_TOPICS} topics...")
 lda = LatentDirichletAllocation(
-    n_components=CONFIG["num_topics"],
+    n_components=NUM_TOPICS,
     doc_topic_prior=CONFIG["doc_topic_prior"],
     topic_word_prior=CONFIG["topic_word_prior"],
     learning_method='batch', # データ全体を用いた厳密な変分推論
@@ -116,15 +113,15 @@ for i, topic in enumerate(lda.components_):
     print(f"[{i:02}] {', '.join(top_terms)}")
 
 # トピック分布のDataFrame結合
-for i in range(CONFIG["num_topics"]):
+for i in range(NUM_TOPICS):
     df[f"Topic_{i}"] = doc_topic_dist[:, i]
 # --- データフレーム全体の改行コードをスペースに置換 ---
 df = df.replace({'\n': ' ', '\r': ' '}, regex=True)
-df.to_csv(CONFIG["output_file"], index=False, encoding="utf-8-sig")
+df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
 # ===== 5. 通時的分析：トピック・ダイナミクス（Diachronic Analysis） =====
 # 1. 1年単位で平均値を集計
-topic_cols = [f"Topic_{i}" for i in range(CONFIG["num_topics"])]
+topic_cols = [f"Topic_{i}" for i in range(NUM_TOPICS)]
 df_yearly = df.groupby('year')[topic_cols].mean()
 
 # 2. 移動平均の計算（「見やすさ」のための平滑化）
@@ -134,7 +131,7 @@ df_trend_smooth = df_yearly.rolling(window=window_size, center=True, min_periods
 
 # 3. 可視化
 plt.figure(figsize=(15, 7), dpi=150)
-colors = sns.color_palette(n_colors=CONFIG["num_topics"])
+colors = sns.color_palette(n_colors=NUM_TOPICS)
 
 for i, col in enumerate(topic_cols):
     plt.plot(
@@ -161,9 +158,7 @@ plt.xticks(np.arange(start_year, end_year + 1, 5), rotation=45)
 
 plt.grid(True, linestyle=':', alpha=0.6)
 plt.tight_layout()
-
-# 保存
-plt.savefig(f"{CONFIG['plot_dir']}02-3-1_yearly_topic_trend.png")
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-1_yearly_topic_trend.png"), dpi=300, bbox_inches='tight')
 plt.show()
 
 # ===== 6. 代表的文書の特定（Exemplary Document Extraction） =====
@@ -171,15 +166,12 @@ print("\n" + "="*40)
 print("REPRESENTATIVE WORKS PER TOPIC")
 print("="*40)
 
-for i in range(CONFIG["num_topics"]):
+for i in range(NUM_TOPICS):
     print(f"\n{topic_labels[i]}")
     # 各トピックへの適合度が最も高い文書を抽出（質的分析への接続）
     top_works = df.nlargest(10, f"Topic_{i}")
     for _, row in top_works.iterrows():
         print(f" - {row[f'Topic_{i}']:0.3f}: {row['title']} ({row['author']}, {int(row['year'])})")
-
-print(f"\nAnalysis complete. Results saved in {CONFIG['output_file']}")
-
 
 # ===== 7. トピック数 K の評価（Model Selection） =====
 # 候補となるトピック数の範囲
@@ -227,7 +219,7 @@ ax2.tick_params(axis='y', labelcolor=color)
 plt.title("Evaluation of LDA Topic Models by Topic Count (K) on Held-out Data", fontsize=14)
 fig.tight_layout()
 plt.grid(True, linestyle='--', alpha=0.5)
-plt.savefig(f"{CONFIG['plot_dir']}02-3-2_model_selection_metrics.png")
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-2_model_selection_metrics.png"), dpi=300, bbox_inches='tight')
 plt.show()
 
-print("Evaluation complete. Identify the 'elbow' where the improvement plateaus on the test data.")
+print(f"全解析完了。結果は {OUTPUT_CSV} および {PLOT_DIR} に保存されました。")

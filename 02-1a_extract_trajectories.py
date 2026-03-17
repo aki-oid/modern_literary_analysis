@@ -1,16 +1,18 @@
 # 2-1.「物語の軌跡（Narrative Trajectory）」や「物語の弧（Narrative Arc）」を計算機で解明しようとする
 # 2-1a. 物語の軌跡の抽出と可視化
+
+import os
 import json
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 import torch
-import os
 import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 import random
+from config import *
 
 # ===== seed =====
 def set_seed(seed=42):
@@ -23,13 +25,10 @@ def set_seed(seed=42):
 set_seed(42)
 
 # ===== config =====
-INPUT_JSON = "data/01_literature.json"
-OUTPUT_PKL = "data/02-1a_narrative_trajectories.pkl"
-PLOT_DIR = "data/plots/"
-os.makedirs(PLOT_DIR, exist_ok=True)
-
+INPUT_JSON = D01_LITERATURE
+OUTPUT_PKL = D021a_TRAJECTORY
+ID_FILE = get_file_prefix(os.path.basename(__file__))
 MODEL_NAME = "sonoisa/sentence-bert-base-ja-mean-tokens-v2"
-NUM_SEGMENTS = 20  # 作品を20等分する
 
 print(f"モデル {MODEL_NAME} をロード中...")
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -140,7 +139,7 @@ for i, row in sample_df.iterrows():
 
 plt.tight_layout()
 plt.suptitle(f"物語の軌跡 (Narrative Trajectories): 冒頭からの意味的変容", fontsize=16, y=1.02)
-plt.savefig(f"{PLOT_DIR}02-1a_Narrative_Trajectories.png", dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}_Narrative_Trajectories.png"), dpi=300, bbox_inches='tight')
 plt.show()
 
 print("\n"+"="*50)
