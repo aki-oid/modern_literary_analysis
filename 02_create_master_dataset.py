@@ -44,7 +44,7 @@ def load_and_merge():
     # 4. 最終的な列の並び替え（見やすさのため）
     # メタデータ -> 構造 -> 内容 -> スタイル の順に整理
     metadata_cols = ["title", "author", "year", "decade", "length_category"]
-    shape_cols = ["shape_name", "distance_to_center"]
+    shape_cols = ["shape_name", "distance_to_center"]+ [c for c in master.columns if c.startswith("dist_to_")]
     topic_cols = [c for c in master.columns if "Topic_" in c]
     morph_cols = [c for c in master.columns if c not in metadata_cols + shape_cols + topic_cols]
     

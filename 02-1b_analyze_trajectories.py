@@ -198,11 +198,19 @@ for i, cat in enumerate(categories_to_plot):
     cluster_names = {j: f"Shape {chr(65+j)}" for j in range(NUM_CLUSTERS)}
     df_valid["shape_name"] = df_valid["cluster"].map(cluster_names)
     
-    distances = kmeans.transform(X_scaled)
-    df_valid["distance_to_center"] = [distances[idx, cluster_idx] for idx, cluster_idx in enumerate(df_valid["cluster"])]
-
+    distances_all = kmeans.transform(X_scaled) # 全クラスタとの距離行列 (作品数 x クラスタ数)
+    
+    # 各クラスタへの距離を個別の列として追加
+    dist_cols = []
+    for j in range(NUM_CLUSTERS):
+        col_name = f"dist_to_{cluster_names[j].replace(' ', '_')}" # 例: dist_to_Shape_A
+        df_valid[col_name] = distances_all[:, j]
+        dist_cols.append(col_name)
+    df_valid["distance_to_center"] = [distances_all[idx, cluster_idx] for idx, cluster_idx in enumerate(df_valid["cluster"])]
+    
     # --- CSV保存用のデータをリストに追加 ---
-    extracted_df = df_valid[["title", "author", "year", "decade", "length_category", "shape_name", "distance_to_center"]].copy()
+    base_cols = ["title", "author", "year", "decade", "length_category", "shape_name", "distance_to_center"]
+    extracted_df = df_valid[base_cols + dist_cols].copy()
     all_cluster_results.append(extracted_df)
 
     # Seabornによる誤差帯（ばらつき）描画のためのデータ成形
