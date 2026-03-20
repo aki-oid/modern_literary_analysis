@@ -12,44 +12,67 @@ from matplotlib.ticker import ScalarFormatter
 from config import *
 
 # ===== 1. 設定 & 定数 =====
-INPUT_JSON = D01_LITERATURE
-OUTPUT_CSV = D022_STYLE
+INPUT_JSON1 = D01_LITERATURE
+INPUT_JSON2 = D022a_KANJI_MAPPING
+OUTPUT_CSV = D022b_STYLE
 ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 # 日本語フォント設定
 plt.rcParams['font.family'] = 'MS Gothic'
 
-# 学術的補完：頻出旧字体・異体字リスト（判定精度向上用）
-OLD_KANJI_STR = (
-    "亞惡壓已卑喝嘆器塀墨層屮悔慨憎懲敏既暑梅海渚漢煮爫琢碑社祉祈祐祖祝禍禎穀突節練縉繁署者臭艹艹著褐視謁謹賓贈辶逸難響頻"
-    "體國會實氣獨與變寫廣讀學禮盡驛鐵應觀歸舊晝顯燒條狀乘淨眞粹衞驛圓緣艷奧橫歐黃假價畫魁海繪慨概擴殼覺樂渴褐"
-    "勸卷寬歡觀貫關陷巖顏歸僞戲犧據擧虛峽狹曉勤謹近驅勳群軍郡係繼惠掲攜溪經莖螢輕鷄藝擊缺儉劍險驗顯獻權厳源縣"
-    "效恆煌廣鑛碎劑濟祭齋細宰裁判最際雜產算贊殘慘仕仔使刺司姉始指死視試詞誌諮資飼事似侍兒字時磁治爾自慈濕質實"
-    "寫捨奢煮勺灼爵若弱主取守手朱殊狩授樹収終秋週愁酬衆集住十柔熟術述純准順遵處諸署緒助敍叙徐除傷償勝匠昇昭晶"
-    "松沼照燒獎條狀乘淨剩場疊穰蒸讓釀嘱觸辱神眞寢震慎新薪審刃人仁盡迅甚陣尋甚杉親身進帥推水垂錘數枢趨雛据杉澄"
-    "寸世制勢聖誠齊靜稅説攝節絶舌羨鮮前善漸然全禪繕撰踐遷選薦銭閃戦潜船尖智置逐蓄築畜竹筑衷忠中仲駐昼柱鋳著"
-    "貯庁鳥張朝潮町超暢頂長牒跳徴挺釣寵聴帳脹直朕沈珍賃鎮陳追墜通痛塚掴漬低停呈廷弟定底貞庭挺提程締釘鼎滴的"
-    "笛適適鏑敵嫡溺哲徹撤鉄天転展店添典点伝澱殿土吐徒途都度渡塗杜屠党冬凍刀唐塔島悼投搭東桃棟盗陶湯灯当独読"
-    "特督内南難軟二尼弐肉日入如任忍認妊念燃粘農濃脳能覇派把波馬婆排廃牌背輩配拝杯梅売倍買媒陪博白伯泊拍舶縛"
-    "麦爆漠莫箱八発抜髪伐罰範販汎繁彼比筆非卑碑扉飛皮備微美鼻俵標氷表評描病秒品不付府負婦浮敷普賦部武舞復幅"
-    "複覆腹沸仏物分文聞兵平並閉塀弊弊社米弁勉歩保報宝抱放方法泡砲豊亡忘忙傍防妨某棒貌冒望紡房北牧本翻凡末摩"
-    "魔麻毎妹枚埋幕膜万慢満漫未味密妙民眠名命明盟銘鳴迷冥務無夢霧黙門問夜野也弥矢役約訳薬由輸予余与誉預容曜"
-    "様葉陽養来頼雷乱覧利理履裏離陸律率略流留硫粒隆龍呂慮旅虜僚両量領良療糧力緑林倫輪隣臨類令礼零例冷励嶺"
-    "鈴隷齢麗黎戻連練錬路露労廊楼朗浪老録論和話歪"
-)
-OLD_KANJI_SET = set(OLD_KANJI_STR)
+def load_kyuji_mapping(json_path):
+    print("旧字・異体字マッピング辞書を読み込んでいます...")
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            mapping = json.load(f)
+        print(f"完了: {len(mapping)} 件の旧字・異体字データを登録しました。")
+        return mapping
+    except Exception as e:
+        print(f"エラー: マッピング辞書の読み込みに失敗しました ({e})。")
+        return {}
+    
+KYUJI_MAPPING = load_kyuji_mapping(INPUT_JSON2)
 
 # ===== 2. 分析補助関数 =====
 tagger = fugashi.Tagger()
 
-def is_old_kanji(char):
-    # Unicodeのより広範な漢字範囲をカバー
-    if not (('\u4E00' <= char <= '\u9FFF') or ('\u3400' <= char <= '\u4DBF')):
-        return False
-    if char in OLD_KANJI_SET:
-        return True
-    # 互換漢字
-    return 0xF900 <= ord(char) <= 0xFAFF
+def is_kanji(char):
+    # CJK統合漢字、拡張A、互換漢字の範囲
+    return ('\u4E00' <= char <= '\u9FFF') or ('\u3400' <= char <= '\u4DBF') or ('\uF900' <= char <= '\uFAFF')
+
+def split_sentences_robust(text):
+    """
+    カギカッコ内を保護しつつ、文を分割する。
+    """
+    if not text:
+        return []
+
+    # 1. カギカッコ内の句点を一時的に保護
+    # 最小一致 (.*?) でカギカッコ内を特定し、その中の句点を置換
+    protected_text = re.sub(
+        r'([「『])(.*?)([」』])',
+        lambda m: m.group(1) + m.group(2).replace('。', '<PER>').replace('！', '<EXC>').replace('？', '<QUE>') + m.group(3),
+        text
+    )
+
+    # 2. 本来の文境界（。！？ \n）で分割
+    # 分割後の句点等を消さないためにカッコで括る（re.splitの仕様）
+    raw_sentences = re.split(r'([。！？\n])', protected_text)
+    
+    # 3. 分割した記号を文末に結合し、保護した記号を元に戻す
+    sentences = []
+    for i in range(0, len(raw_sentences) - 1, 2):
+        s = raw_sentences[i] + raw_sentences[i+1]
+        s = s.replace('<PER>', '。').replace('<EXC>', '！').replace('<QUE>', '？').strip()
+        if s:
+            sentences.append(s)
+            
+    # 最後の残余部分の処理
+    last_part = raw_sentences[-1].replace('<PER>', '。').replace('<EXC>', '！').replace('<QUE>', '？').strip()
+    if last_part:
+        sentences.append(last_part)
+
+    return sentences
 
 def calculate_mattr(words, window_size=500):
     """
@@ -74,25 +97,45 @@ def extract_stylometry(data, mattr_window=500):
 
     # --- A. 表記統計 ---
     clean_orig = re.sub(r'\s+', '', orig)
-    kanji_chars = [c for c in clean_orig if is_old_kanji(c) or ('\u4E00' <= c <= '\u9FFF')]
-    old_kanji_count = sum(1 for c in kanji_chars if is_old_kanji(c))
+    kanji_chars = [c for c in clean_orig if is_kanji(c)]
+    
+    old_kanji_count = sum(1 for c in kanji_chars if c in KYUJI_MAPPING)
     old_kanji_ratio = old_kanji_count / len(kanji_chars) if kanji_chars else 0
 
     # --- B. 文構造統計 ---
-    sentences = [s.strip() for s in re.split(r'[。！？\n]', norm) if len(s.strip()) > 0]
-    avg_sentence_length = np.mean([len(s) for s in sentences]) if sentences else 0
+    sentences = split_sentences_robust(norm)
+    
+    if sentences:
+        avg_sentence_length = np.mean([len(s) for s in sentences])
+        # 文長のばらつき（標準偏差）も、文体の「リズム」を知る上で重要な指標です
+        std_sentence_length = np.std([len(s) for s in sentences])
+    else:
+        avg_sentence_length = 0
+        std_sentence_length = 0
 
     # --- C. 形態素解析統計 ---
     words = []
     pos_targets = {"名詞", "動詞", "形容詞", "助詞", "助動詞", "副詞", "接続詞"}
     pos_counts = {p: 0 for p in pos_targets}
     goshu_counts = {"和": 0, "漢": 0, "外": 0, "混": 0}
-    
+    unk_count = 0
     for word in tagger(no_p):
         pos1 = word.feature.pos1
         if pos1 in ["補助記号", "空白"]: continue
-        
-        words.append(word.surface)
+        if word.is_unk:
+            unk_count += 1
+        try:
+            # UniDic環境を想定し、lemma（語彙素）を取得
+            lemma = word.feature.lemma
+            if not lemma or lemma == "*":
+                lemma = word.surface
+            # 辞書によっては「食べる-動詞」のようにハイフンで付加情報がつく場合の安全策
+            lemma = lemma.split('-')[0]
+        except AttributeError:
+            # lemma属性がない場合は表層形をフォールバックとして使用
+            lemma = word.surface
+            
+        words.append(lemma)
         if pos1 in pos_counts: pos_counts[pos1] += 1
         
         try:
@@ -106,13 +149,14 @@ def extract_stylometry(data, mattr_window=500):
     mattr_val = calculate_mattr(words, window_size=mattr_window)
 
     features = {
-        "平均文長": avg_sentence_length,
+        "平均文長": avg_sentence_length,"文長標準偏差": std_sentence_length,
         "読点頻度": norm.count("、") / len(norm) if len(norm) > 0 else 0,
         "旧字比率": old_kanji_ratio,
         "語彙多様度_MATTR": mattr_val,
         "和語比率": goshu_counts["和"] / word_count if word_count > 0 else 0,
         "漢語比率": goshu_counts["漢"] / word_count if word_count > 0 else 0,
         "外来語比率": goshu_counts["外"] / word_count if word_count > 0 else 0,
+        "未知語率": unk_count / word_count if word_count > 0 else 0, # 【追加】
     }
     for pos in pos_targets:
         features[f"{pos}割合"] = pos_counts[pos] / word_count if word_count > 0 else 0
@@ -122,10 +166,10 @@ def extract_stylometry(data, mattr_window=500):
 # ===== 3. 実行・データ集計 =====
 print("データを読み込んでいます...")
 try:
-    with open(INPUT_JSON, "r", encoding="utf-8") as f:
+    with open(INPUT_JSON1, "r", encoding="utf-8") as f:
         dataset = json.load(f)
 except FileNotFoundError:
-    print(f"Error: {INPUT_JSON} が見つかりません。")
+    print(f"Error: {INPUT_JSON1} が見つかりません。")
     dataset = []
 
 features_list = []
@@ -141,13 +185,26 @@ for data in tqdm(dataset, desc="Stylometry Extraction"):
     features_list.append(style_dict)
 
 df = pd.DataFrame(features_list).sort_values("year")
+front_cols = ["title", "author", "year"]
+other_cols = [col for col in df.columns if col not in front_cols]
+df = df[front_cols + other_cols]
 df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
 # ===== 4. 可視化 =====
 print("グラフを生成中...")
 # 移動平均の計算（データが少ない箇所のノイズを抑えるため window=20）
 numeric_cols = ["平均文長", "読点頻度", "旧字比率", "語彙多様度_MATTR", "和語比率", "漢語比率", "外来語比率", "名詞割合", "動詞割合", "形容詞割合", "助詞割合", "助動詞割合", "副詞割合", "接続詞割合"]
-df_rolling = df[["year"] + numeric_cols].rolling(window=20, on='year', min_periods=5).mean()
+if not df.empty:
+    # 1. 同じ年の作品群を平均化
+    df_yearly = df.groupby("year")[numeric_cols].mean()
+    # 2. データの存在しない年をNaNで埋めて、連続した年系列を作成
+    min_year, max_year = int(df["year"].min()), int(df["year"].max())
+    df_yearly = df_yearly.reindex(range(min_year, max_year + 1))
+    # 3. 5「年」の窓幅で厳密な移動平均を計算
+    df_rolling = df_yearly.rolling(window=3, min_periods=2).mean().reset_index()
+    df_rolling = df_rolling.rename(columns={"index": "year"})
+else:
+    df_rolling = pd.DataFrame(columns=["year"] + numeric_cols)
 
 # [Graph 1: 語種構成の積み上げ推移]
 fig, ax1 = plt.subplots(figsize=(12, 6))
@@ -167,7 +224,7 @@ plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-1_word_origin_stack.png"), dpi=30
 plt.figure(figsize=(12, 6))
 scatter = plt.scatter(df["year"], df["語彙多様度_MATTR"], c=df["漢語比率"], cmap="coolwarm", alpha=0.5)
 plt.colorbar(scatter, label="漢語比率")
-sns.regplot(data=df, x="year", y="語彙多様度_MATTR", scatter=False, color="black", line_kws={"ls":"--"})
+sns.regplot(data=df, x="year", y="語彙多様度_MATTR", scatter=False,lowess=True, color="black", line_kws={"color": "black", "lw": 2, "ls": "--", "label": "LOESS（局所回帰トレンド）"})
 plt.title("年代別語彙多様度 (MATTR500) と漢語依存度の相関", fontsize=14)
 plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-2_vocabulary_mattr_enhanced.png"), dpi=300, bbox_inches='tight')
 
