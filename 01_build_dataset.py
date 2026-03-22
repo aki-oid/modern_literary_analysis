@@ -12,6 +12,7 @@ from config import *
 
 # ===== 1. 設定 =====
 INPUT_CSV = D00_INPUT_DATA
+INPUT_KANJI_MAPPING = D00_KANJI_MAPPING
 OUTPUT_JSON = D01_LITERATURE
 
 MAX_WORKS_TOTAL = 2000
@@ -29,10 +30,22 @@ PRIORITY_TITLES = [
 print("NLPモデルをロード中...")
 nlp = spacy.load("ja_ginza") 
 
-# 旧字→新字変換用マッピング（より網羅的に拡充）
-OLD_KANJI = "體國會實氣獨與變寫廣讀學禮盡驛廣鐵應觀歸舊晝顯燒條狀乘淨眞粹體"
-NEW_KANJI = "体国会実気独与変写広読学礼尽駅広鉄応観帰旧昼顕焼条状乗浄真粋体"
-KANJI_TABLE = str.maketrans(OLD_KANJI, NEW_KANJI)
+print("旧字マッピングデータをロード中...")
+with open(INPUT_KANJI_MAPPING, "r", encoding="utf-8") as f:
+    kanji_json = json.load(f)
+
+kanji_dict = {}
+skipped_keys = []
+for old_char, val in kanji_json.items():
+    if "shinji" in val and val["shinji"]:
+        if len(old_char) == 1:
+            kanji_dict[old_char] = val["shinji"]
+        else:
+            skipped_keys.append(old_char)
+if skipped_keys:
+    print(f"注意: 以下のキーは1文字ではないため変換テーブルから除外されました: {skipped_keys}")
+
+KANJI_TABLE = str.maketrans(kanji_dict)
 
 # ===== 2. 前処理関数 =====
 def extract_year(text):
@@ -44,42 +57,91 @@ def clean_text(text):
     text = re.split(r'\n底本：', text)[0]
     borders = list(re.finditer(r'-{10,}', text))
     if len(borders) >= 2: text = text[borders[1].end():]
-    text = re.sub(r"《.*?》|［＃.*?］|｜|\r", "", text)
+    
+    text = re.sub(r"※?［＃.*?］", "", text)
+    text = re.sub(r"《.*?》|｜|\r", "", text)
+    text = re.sub(r'　{2,}', '　', text) 
+    text = re.sub(r'(―|ー|…|・|〜){3,}', r'\1\1', text)
+    
+    # 段落区切り（空行）は残しつつ、文の途中の単なる改行は削除して繋げる
+    text = re.sub(r'(?<!\n)\n(?!\n)', '', text)
+    # 連続しすぎる改行（3つ以上）は2つにまとめる
+    text = re.sub(r'\n{3,}', '\n\n', text)
     return text.strip()
 
 def process_text_variants(text):
     """
-    1. 人名を除去したテキスト
-    2. 抽出された人名リスト
-    3. 旧字を正規化したテキスト
-    を作成する。Sudachiの制限を避けるため、テキストを分割して処理。
+    1. 元テキスト (original)
+    2. 旧字を正規化したテキスト (normalized)
+    3. 正規化テキストから人名をプレースホルダーに置換したテキスト (no_person)
+    4. 抽出された人名リスト
     """
-    # 1チャンクあたりの文字数（安全のため10,000文字程度に設定）
-    CHUNK_SIZE = 10000
-    chunks = [text[i:i + CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)]
+    text_normalized = text.translate(KANJI_TABLE)
     
+    MAX_LEN = 10000 # 余裕を持たせて10000文字を上限とする
+    chunks = []
+    current_chunk = ""
+    
+    # まず改行を保持したまま行ごとに分割
+    for line in text_normalized.splitlines(keepends=True):
+        # 行を追加しても上限を超えない場合
+        if len(current_chunk) + len(line) <= MAX_LEN:
+            current_chunk += line
+        else:
+            # 行自体が長すぎる場合（改行のない長文）は「。」で分割を試みる
+            if len(line) > MAX_LEN:
+                if current_chunk:
+                    chunks.append(current_chunk)
+                    current_chunk = ""
+                
+                sentences = line.split('。')
+                for i, sent in enumerate(sentences):
+                    # 最後の要素以外は「。」を戻す
+                    if i < len(sentences) - 1:
+                        sent += '。'
+                    
+                    if len(current_chunk) + len(sent) <= MAX_LEN:
+                        current_chunk += sent
+                    else:
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                        # それでも1文が5000文字を超える異常なケースの最終手段（強制分割）
+                        if len(sent) > MAX_LEN:
+                            for j in range(0, len(sent), MAX_LEN):
+                                chunks.append(sent[j:j+MAX_LEN])
+                            current_chunk = ""
+                        else:
+                            current_chunk = sent
+            else:
+                # 行は短いが、足すと上限を超える場合
+                if current_chunk:
+                    chunks.append(current_chunk)
+                current_chunk = line
+                
+    if current_chunk:
+        chunks.append(current_chunk)
+    # -----------------------------------------------------------
+
     all_person_names = []
     processed_no_person_chunks = []
     
-    for chunk in chunks:
-        doc = nlp(chunk)
-        # 人名を抽出（後ろから置換してインデックスずれを防ぐ）
+    # チャンクごとにGiNZAで処理（nlp.pipeを使った一括処理で高速化）
+    docs = nlp.pipe(chunks, batch_size=50)
+    for chunk, doc in zip(chunks, docs):
         entities = sorted([ent for ent in doc.ents if ent.label_ == "Person"], key=lambda x: x.start_char, reverse=True)
         
         chunk_no_person = chunk
         for ent in entities:
             all_person_names.append(ent.text)
-            chunk_no_person = chunk_no_person[:ent.start_char] + chunk_no_person[ent.end_char:]
-        
+            chunk_no_person = chunk_no_person[:ent.start_char] + "[PERSON]" + chunk_no_person[ent.end_char:]
+            
         processed_no_person_chunks.append(chunk_no_person)
-    
     text_no_person = "".join(processed_no_person_chunks)
-    text_normalized = text_no_person.translate(KANJI_TABLE)
-    
+
     return {
         "original": text,
-        "no_person": text_no_person,
         "normalized": text_normalized,
+        "no_person": text_no_person,
         "person_names": list(set(all_person_names))
     }
 
@@ -88,13 +150,12 @@ print("CSVを読み込み中...")
 df = pd.read_csv(INPUT_CSV, encoding="utf-8")
 df["year"] = df["初出"].apply(extract_year).fillna(df["底本初版発行年1"].apply(extract_year))
 df["author"] = df["姓"].fillna("") + df["名"].fillna("")
-
 # 重複排除用の「クリーンなタイトル」を作成 (例: "こころ(新字新仮名)" -> "こころ")
 df["title_clean"] = df["作品名"].str.replace(r"\(.*?\)|（.*?）", "", regex=True).str.strip()
 
 # フィルタリング
 df = df[
-    (df["分類番号"].str.contains(r"NDC 913", na=False)) &
+    (df["分類番号"].str.contains(r"NDC K?913", na=False)) &
     (df["役割フラグ"] == "著者") &
     (df["人物著作権フラグ"] == "なし") &
     (df["テキストファイルURL"].notna()) &
@@ -104,6 +165,9 @@ df = df[
 def calculate_priority(row):
     score = 0
     if row["title_clean"] in PRIORITY_TITLES: score += 1000
+    kana_type = str(row.get("文字遣い種別", ""))
+    if kana_type == "旧字旧仮名": score += 500
+    elif kana_type == "新字旧仮名": score += 300
     if pd.notna(row.get("テキストファイルURL")): score += 100
     if pd.notna(row.get("初出")): score += 50
     if "全集" in str(row.get("底本名1", "")): score += 20
@@ -120,8 +184,6 @@ df = df[df["author"].isin(valid_authors)].copy()
 
 # 作家あたりの上限
 df = df.groupby("author").head(MAX_WORKS_PER_AUTHOR)
-
-# 全体の上限
 df = df.head(MAX_WORKS_TOTAL)
 
 # ===== 4. ダウンロードと多層プロセシング =====
@@ -136,14 +198,18 @@ def download_and_extract(url):
     return None
 
 dataset = []
+skipped_logs = []
 print(f"{len(df)}作品の抽出・多層プロセシングを開始します...")
 
 for _, row in tqdm(df.iterrows(), total=len(df)):
     raw_text = download_and_extract(row["テキストファイルURL"])
-    if not raw_text: continue
-    
+    if not raw_text: 
+            skipped_logs.append(f"【DL失敗】{row['author']} - {row['作品名']}")
+            continue
     clean = clean_text(raw_text)
-    if len(clean) < 100: continue
+    if len(clean) < 100: 
+            skipped_logs.append(f"【文字数不足({len(clean)}文字)】{row['author']} - {row['作品名']}")
+            continue
 
     # 多層プロセシング（人名除去、正規化、人名リスト抽出）
     variants = process_text_variants(clean)
@@ -153,13 +219,16 @@ for _, row in tqdm(df.iterrows(), total=len(df)):
         "author": row["author"],
         "year": int(row["year"]),
         "text_original": variants["original"],
-        "text_no_person": variants["no_person"],
         "text_normalized": variants["normalized"],
+        "text_no_person": variants["no_person"],
         "person_names": variants["person_names"]
     })
-    #time.sleep(0.1)
+    time.sleep(0.2)
 
 with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
     json.dump(dataset, f, ensure_ascii=False, indent=2)
 
 print(f"\n完了: {len(dataset)}件の多層構造データを '{OUTPUT_JSON}' に保存しました。")
+print("\n--- スキップされた作品リスト ---")
+for log in skipped_logs[:30]: # とりあえず最初の30件を表示
+    print(log)

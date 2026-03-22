@@ -1,3 +1,5 @@
+# 2-2a. 文体分析のための特徴量抽出と年代別スタイルの可視化
+
 import os
 import json
 import pandas as pd
@@ -13,8 +15,8 @@ from config import *
 
 # ===== 1. 設定 & 定数 =====
 INPUT_JSON1 = D01_LITERATURE
-INPUT_JSON2 = D022a_KANJI_MAPPING
-OUTPUT_CSV = D022b_STYLE
+INPUT_JSON2 = D00_KANJI_MAPPING
+OUTPUT_CSV = D022a_STYLE
 ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 # 日本語フォント設定
@@ -150,7 +152,7 @@ def extract_stylometry(data, mattr_window=500):
 
     features = {
         "平均文長": avg_sentence_length,"文長標準偏差": std_sentence_length,
-        "読点頻度": norm.count("、") / len(norm) if len(norm) > 0 else 0,
+        "読点頻度": orig.count("、") / len(orig) if len(orig) > 0 else 0,
         "旧字比率": old_kanji_ratio,
         "語彙多様度_MATTR": mattr_val,
         "和語比率": goshu_counts["和"] / word_count if word_count > 0 else 0,

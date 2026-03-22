@@ -1,3 +1,5 @@
+# 2-3. トピック抽出と通時的分析：LDAによるテーマの動向分析
+
 import os
 import json
 import pandas as pd
@@ -69,7 +71,7 @@ with open(INPUT_JSON, "r", encoding="utf-8") as f:
     df = pd.DataFrame(json.load(f))
 
 tqdm.pandas(desc="Linguistic Processing")
-df["processed_text"] = df["text_normalized"].progress_apply(extract_academic_lemmas)
+df["processed_text"] = df["text_no_person"].progress_apply(extract_academic_lemmas)
 
 # ===== 3. 統計的モデル構築：LDA（Probabilistic Topic Modeling） =====
 # 文書頻度（DF）に基づく次元削減（Zipfの法則に基づくカットオフ）

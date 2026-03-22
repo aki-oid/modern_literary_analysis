@@ -11,7 +11,7 @@ def load_and_merge():
     
     # 1. 各データの読み込み
     df_shape = pd.read_csv(D021b_TRAJECTORY)
-    df_morph = pd.read_csv(D022b_STYLE)
+    df_morph = pd.read_csv(D022a_STYLE)
     df_topic = pd.read_csv(D023_TOPIC)
     
     # 2. 結合の前に不要な重複列や、形式を整える
@@ -58,7 +58,7 @@ def load_and_merge():
     print(f"マスターデータセットを保存しました: {OUTPUT_MASTER}")
 
 if __name__ == "__main__":
-    if all(os.path.exists(f) for f in [D021b_TRAJECTORY, D022b_STYLE, D023_TOPIC]):
+    if all(os.path.exists(f) for f in [D021b_TRAJECTORY, D022a_STYLE, D023_TOPIC]):
         load_and_merge()
     else:
         print("エラー: 必要なCSVファイルが見つかりません。パスを確認してください。")
