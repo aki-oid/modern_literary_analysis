@@ -15,16 +15,28 @@ D01_LITERATURE = os.path.join(DATA_DIR, "01_literature.json")
 D021a_TRAJECTORY = os.path.join(DATA_DIR, "02-1a_narrative_trajectories.pkl")
 D021b_TRAJECTORY = os.path.join(DATA_DIR, "02-1b_clustering_results.csv")
 D022a_STYLE = os.path.join(DATA_DIR, "02-2a_features_style.csv")
-D023_TOPIC = os.path.join(DATA_DIR, "02-3_features_topics.csv")
+D023_TOPIC = os.path.join(DATA_DIR, "02-3-1_features_topics.csv")
 D02_MASTER_DATA_CSV = os.path.join(DATA_DIR, "02_master_dataset.csv")
+D02_MASTER_SCALED_DATA_CSV = os.path.join(DATA_DIR, "02_master_dataset_scaled.csv")
 
 # 分析パラメータ
 YEAR_MIN = 1868
 YEAR_MAX = 1975
+ERA_LABELS = {
+    "明治": (1868, 1912),
+    "大正": (1912, 1926),
+    "昭和初期": (1926, 1945),
+    "昭和後期": (1945, 1989)
+}
+def get_era(year):
+    for era, (start, end) in ERA_LABELS.items():
+        if start <= year < end:
+            return era
+    return "その他"
 
 NUM_CLUSTERS = 5
 NUM_SEGMENTS = 20
-NUM_TOPICS = 8
+NUM_TOPICS = 14
 
 def get_file_prefix(path):
     # ファイルパスからファイル名（02-1b_... .pkl）だけを取り出す

@@ -49,9 +49,23 @@ KANJI_TABLE = str.maketrans(kanji_dict)
 
 # ===== 2. 前処理関数 =====
 def extract_year(text):
-    if pd.isna(text): return None
-    match = re.search(r"\d{4}", str(text))
-    return int(match.group()) if match else None
+    if pd.isna(text) or text == "":
+        return None
+    
+    # 1. まず「1893」や「1956」のような4桁の数字を探す
+    years = re.findall(r'\b(18\d{2}|19\d{2}|20\d{2})\b', str(text))
+    if years:
+        # 複数ある場合は、一番古い年（執筆年に近い方）を採用
+        return int(min(years))
+    
+    # 2. 数字がない場合、明治・大正・昭和の和暦表記から計算する（オプション）
+    era_map = {"明治": 1867, "大正": 1911, "昭和": 1925, "平成": 1988}
+    for era, start_year in era_map.items():
+        match = re.search(f'{era}(\d+)年', str(text))
+        if match:
+            return start_year + int(match.group(1))
+            
+    return None
 
 def clean_text(text):
     text = re.split(r'\n底本：', text)[0]
@@ -78,7 +92,7 @@ def process_text_variants(text):
     """
     text_normalized = text.translate(KANJI_TABLE)
     
-    MAX_LEN = 10000 # 余裕を持たせて10000文字を上限とする
+    MAX_LEN = 10000
     chunks = []
     current_chunk = ""
     
@@ -125,7 +139,7 @@ def process_text_variants(text):
     all_person_names = []
     processed_no_person_chunks = []
     
-    # チャンクごとにGiNZAで処理（nlp.pipeを使った一括処理で高速化）
+    # チャンクごとにGiNZAで処理
     docs = nlp.pipe(chunks, batch_size=50)
     for chunk, doc in zip(chunks, docs):
         entities = sorted([ent for ent in doc.ents if ent.label_ == "Person"], key=lambda x: x.start_char, reverse=True)
@@ -148,7 +162,11 @@ def process_text_variants(text):
 # ===== 3. データ読み込みとスコアリング =====
 print("CSVを読み込み中...")
 df = pd.read_csv(INPUT_CSV, encoding="utf-8")
-df["year"] = df["初出"].apply(extract_year).fillna(df["底本初版発行年1"].apply(extract_year))
+df["year_shutsude"] = df["初出"].apply(extract_year)
+df["year_oyamoto"] = df["底本の親本初版発行年1"].apply(extract_year)
+df["year_teihon"] = df["底本初版発行年1"].apply(extract_year)
+df["year"] = df[["year_shutsude", "year_oyamoto", "year_teihon"]].min(axis=1)
+
 df["author"] = df["姓"].fillna("") + df["名"].fillna("")
 # 重複排除用の「クリーンなタイトル」を作成 (例: "こころ(新字新仮名)" -> "こころ")
 df["title_clean"] = df["作品名"].str.replace(r"\(.*?\)|（.*?）", "", regex=True).str.strip()
@@ -230,5 +248,5 @@ with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
 
 print(f"\n完了: {len(dataset)}件の多層構造データを '{OUTPUT_JSON}' に保存しました。")
 print("\n--- スキップされた作品リスト ---")
-for log in skipped_logs[:30]: # とりあえず最初の30件を表示
+for log in skipped_logs[:30]:
     print(log)

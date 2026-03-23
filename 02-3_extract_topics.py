@@ -15,32 +15,45 @@ from config import *
 
 # ===== config =====
 INPUT_JSON = D01_LITERATURE
+INPUT_STOPWORDS = "data/INPUT/slothlib.txt"
 OUTPUT_CSV = D023_TOPIC
+OUTPUT_SUMMARY_CSV = os.path.join(DATA_DIR, "02-3-2_topic_summary.csv")
 ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 CONFIG = {
     "random_seed": 42,
-    "max_iter": 50,  # EMアルゴリズムが十分収束する反復回数
-    "doc_topic_prior": 0.1,  # Alpha: 文書ごとのトピック分布のスパース性（1未満で少数のトピックに集中）
-    "topic_word_prior": 0.01 # Beta/Eta: トピックごとの単語分布のスパース性（より限定的な語彙を重視）
+    "max_iter": 200,  # EMアルゴリズムが十分収束する反復回数
 }
 plt.rcParams['font.family'] = 'MS Gothic' # 環境に合わせて調整
 
 # ===== 1. 言語学的処理：精密な形態素解析（Linguistic Preprocessing） =====
 tagger = fugashi.Tagger()
 
-# Zipfの法則に従い高頻度かつ無意味な語、およびドメイン特有の定型語を除外
-ACADEMIC_STOP_WORDS = {
-    "こと", "もの", "自分", "ため", "とき", "よう", "ほう", "わけ", "なか", "ところ",
-    "それ", "これ", "あれ", "どれ", "ここ", "そこ", "あそこ", "どこ",
-    "さん", "くん", "ちゃん", "ある", "いる", "なる", "する", "みる", "いく", "くる"
+try:
+    with open(INPUT_STOPWORDS, "r", encoding="utf-8") as f:
+        slothlib_words = set(line.strip() for line in f if line.strip())
+except FileNotFoundError:
+    print(f"Warning: {INPUT_STOPWORDS} が見つかりません。")
+    slothlib_words = set()
+lliberary_whitelist = {
+    "私", "自分", "僕", "俺", "彼", "彼女",  # 一人称・三人称
+    "思う", "考える", "知る", "感じる",      # 内面描写
+    "心", "魂", "死", "愛", "孤独",          # 抽象概念
+    "しかし", "けれど", "やはり", "ふと"     # 接続詞・副詞（展開の鍵）
 }
+
+custom_words = {
+    "トウキョウ", "エド", "コウベ", "ナカツ", "ミト","オオサカ", "サイタマ", "ヒロシマ", "フクシマ", "キョウト", "ナゴヤ", "サッポロ",
+    "マモル", "ケン", "リョウ" ,"ハツ", "マン", "キヨシ", "シホ", "ミサ", "タロウ", "メグル", "ジン", "ウジ", "イヨ","モク", "ヒツ"
+}
+STOP_WORDS = slothlib_words | custom_words - lliberary_whitelist
+print(f"ストップワードを {len(STOP_WORDS)} 件読み込みました。")
 
 def extract_academic_lemmas(text):
     """
     形態素解析の学術的妥当性を確保：
     1. 表層形ではなく『語彙素（Lemma）』を使用し、表記揺れや活用を吸収
-    2. 内容語（Content Words）である「名詞」「動詞」「形容詞」に限定
+    2. 内容語（Content Words）である「名詞」に限定
     3. 数詞、代名詞、非自立語、接尾辞を厳密に除外
     """
     if not text or not isinstance(text, str): return ""
@@ -51,7 +64,7 @@ def extract_academic_lemmas(text):
         pos_detail = word.feature.pos2
         
         # 抽出対象：意味を担う内容語に限定
-        if pos in ["名詞", "動詞", "形容詞"]:
+        if pos in ["名詞"]:#, "動詞", "形容詞"
             # 除外対象：分析にノイズを与える機能語的要素
             if pos_detail not in ["数詞", "代名詞", "非自立", "接尾"]:
                 # UniDicの語彙素(lemma)を取得。なければ表層形
@@ -60,7 +73,7 @@ def extract_academic_lemmas(text):
                 lemma = lemma.split("-")[0] 
                 
                 # 長さ制約とストップワード処理
-                if len(lemma) > 1 and lemma not in ACADEMIC_STOP_WORDS:
+                if len(lemma) > 1 and lemma not in STOP_WORDS:
                     tokens.append(lemma)
                     
     return " ".join(tokens)
@@ -76,21 +89,21 @@ df["processed_text"] = df["text_no_person"].progress_apply(extract_academic_lemm
 # ===== 3. 統計的モデル構築：LDA（Probabilistic Topic Modeling） =====
 # 文書頻度（DF）に基づく次元削減（Zipfの法則に基づくカットオフ）
 vectorizer = CountVectorizer(
-    max_df=0.7,  # コーパスの70%以上に出現する一般的な語（ストップワード漏れ等）を排除
-    min_df=5,    # 5文書未満にしか出現しない低頻度語（外れ値・誤字）を排除
-    max_features=5000 # 特徴量空間の適正化
+    max_df=0.6,  # コーパスの60%以上に出現する一般的な語（ストップワード漏れ等）を排除
+    min_df=0.01,    # 5文書未満にしか出現しない低頻度語（外れ値・誤字）を排除
+    max_features=3300 # 特徴量空間の適正化
 )
 dtm = vectorizer.fit_transform(df["processed_text"])
 
 print(f"Executing LDA with {NUM_TOPICS} topics...")
 lda = LatentDirichletAllocation(
     n_components=NUM_TOPICS,
-    doc_topic_prior=CONFIG["doc_topic_prior"],
-    topic_word_prior=CONFIG["topic_word_prior"],
     learning_method='batch', # データ全体を用いた厳密な変分推論
     max_iter=CONFIG["max_iter"],
     random_state=CONFIG["random_seed"],
-    n_jobs=-1
+    n_jobs=-1,
+    evaluate_every=20,          # 20イテレーションごとに評価を計算
+    #verbose=1                   # 1イテレーションごとにログ出力 
 )
 
 doc_topic_dist = lda.fit_transform(dtm)
@@ -114,66 +127,90 @@ for i, topic in enumerate(lda.components_):
     topic_labels.append(label)
     print(f"[{i:02}] {', '.join(top_terms)}")
 
-# トピック分布のDataFrame結合
 for i in range(NUM_TOPICS):
     df[f"Topic_{i}"] = doc_topic_dist[:, i]
-# --- データフレーム全体の改行コードをスペースに置換 ---
-df = df.replace({'\n': ' ', '\r': ' '}, regex=True)
-df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
+
+# トピック分布のDataFrame結合
+topic_cols = [f"Topic_{i}" for i in range(NUM_TOPICS)]
+df["Primary_Topic"] = df[topic_cols].idxmax(axis=1)
+df["Primary_Topic_prob"] = df[topic_cols].max(axis=1)
+
+drop_cols = ["text_original","text_normalized","text_no_person","person_names","processed_text"]
+df_output = df.drop(columns=drop_cols, errors='ignore')
+df_output = df_output.replace({'\n': ' ', '\r': ' '}, regex=True)
+df_output.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
 
 # ===== 5. 通時的分析：トピック・ダイナミクス（Diachronic Analysis） =====
-# 1. 1年単位で平均値を集計
+eras_order = list(ERA_LABELS.keys())
+df['era'] = df['year'].apply(get_era)
+
+df_filtered = df[df['era'].isin(ERA_LABELS.keys())].copy()
+df_filtered['era'] = pd.Categorical(df_filtered['era'], categories=eras_order, ordered=True)
+
+# 2. 時代ごとのトピック平均値を計算
 topic_cols = [f"Topic_{i}" for i in range(NUM_TOPICS)]
-df_yearly = df.groupby('year')[topic_cols].mean()
+era_topic_mean = df_filtered.groupby('era', observed=True)[topic_cols].mean()
 
-# 2. 移動平均の計算（「見やすさ」のための平滑化）
-# window=5 は「前後5年間の平均」をとる設定です。
-window_size = 3
-df_trend_smooth = df_yearly.rolling(window=window_size, center=True, min_periods=1).mean()
+# 3. 可視化（積層棒グラフ）
+plt.figure(figsize=(12, 7))
+era_topic_mean.plot(kind='bar', stacked=True, ax=plt.gca(), colormap='tab10', edgecolor='white')
 
-# 3. 可視化
-plt.figure(figsize=(15, 7), dpi=150)
-colors = sns.color_palette(n_colors=NUM_TOPICS)
+plt.title('時代区分別トピック構成比の推移 (平均確率)', fontsize=15)
+plt.xlabel('時代', fontsize=12)
+plt.ylabel('平均トピック占有率', fontsize=12)
+plt.legend(topic_labels, title="トピック内容", bbox_to_anchor=(1.05, 1), loc='upper left')
+plt.xticks(rotation=0)
+plt.grid(axis='y', linestyle='--', alpha=0.7)
 
-for i, col in enumerate(topic_cols):
-    plt.plot(
-        df_trend_smooth.index, 
-        df_trend_smooth[col], 
-        marker='',
-        linewidth=2.5,
-        alpha=0.9,
-        label=topic_labels[i], 
-        color=colors[i]
-    )
-
-plt.title(f"Yearly Trend of Topic Popularity ({window_size}-year Moving Average)", fontsize=16, pad=20)
-plt.xlabel("Year", fontsize=12)
-plt.ylabel("Mean Topic Probability", fontsize=12)
-
-# 凡例を整理して右側に配置
-plt.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), title="Topics", frameon=False, fontsize=10)
-
-# X軸の目盛りを5年刻みにして見やすくする
-start_year = int(df['year'].min())
-end_year = int(df['year'].max())
-plt.xticks(np.arange(start_year, end_year + 1, 5), rotation=45)
-
-plt.grid(True, linestyle=':', alpha=0.6)
 plt.tight_layout()
-plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-1_yearly_topic_trend.png"), dpi=300, bbox_inches='tight')
+plt.savefig(os.path.join(PLOT_DIR, f"{ID_FILE}-1_era_topic_trend.png"), dpi=300, bbox_inches='tight')
 plt.show()
 
 # ===== 6. 代表的文書の特定（Exemplary Document Extraction） =====
-print("\n" + "="*40)
-print("REPRESENTATIVE WORKS PER TOPIC")
-print("="*40)
-
+summary_rows = []
+print("\nGenerating final summary CSV...")
+print("各トピックの代表的な作品と著者を抽出中...")
+print("=著者：作品数(当該著者の全作品の割合)の順で表示=")
+target_df = df_filtered 
 for i in range(NUM_TOPICS):
-    print(f"\n{topic_labels[i]}")
-    # 各トピックへの適合度が最も高い文書を抽出（質的分析への接続）
-    top_works = df.nlargest(10, f"Topic_{i}")
+    row_data = {
+        "Topic_ID": f"T{i:02d}",
+        "Label": topic_labels[i]
+    }
+    for era in eras_order:
+        row_data[f"Share_{era}"] = era_topic_mean.loc[era, f"Topic_{i}"]
+    
+    # 該当単語（上位20語）
+    top_20_indices = lda.components_[i].argsort()[:-21:-1]
+    top_20_words = [feature_names[j] for j in top_20_indices]
+    row_data["Top_20_Words"] = ", ".join(top_20_words)
+    
+    # 該当作品（上位20作品）
+    top_works = df.nlargest(20, f"Topic_{i}")
+    works_list = []
     for _, row in top_works.iterrows():
-        print(f" - {row[f'Topic_{i}']:0.3f}: {row['title']} ({row['author']}, {int(row['year'])})")
+        works_list.append(f"{row['title']}({row['author']}, {int(row['year'])})")
+    row_data["Top_20_Works"] = " / ".join(works_list)
+    
+    # 著者（上位10名）
+    topic_id = f"Topic_{i}"
+    print(f"\n{topic_labels[i]}")
+    topic_docs = target_df[target_df["Primary_Topic"] == topic_id]
+    author_counts = topic_docs["author"].value_counts().head(10)
+    if not author_counts.empty:
+        for author, count in author_counts.items():
+            # その著者の全作品のうち、このトピックに属する割合（％）も出すと面白い
+            total_author_works = len(target_df[target_df["author"] == author])
+            ratio = (count / total_author_works) * 100
+            print(f" - {author}: {count}作品({ratio:.1f}%)")
+    else:
+        print(" - (該当作品なし)")
+
+    summary_rows.append(row_data)
+
+df_summary = pd.DataFrame(summary_rows)
+df_summary.to_csv(OUTPUT_SUMMARY_CSV, index=False, encoding="utf-8-sig")
+print(f"完了！サマリーを {OUTPUT_SUMMARY_CSV} に保存しました。")
 
 # ===== 7. トピック数 K の評価（Model Selection） =====
 # 候補となるトピック数の範囲

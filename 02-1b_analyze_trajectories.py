@@ -43,9 +43,9 @@ df_len["length_category"] = df_len["char_count"].apply(categorize_length)
 # ===== 2. 軌跡データの読み込みと結合 =====
 print(f"軌跡データを読み込み中: {INPUT_PKL}")
 df_traj = pd.read_pickle(INPUT_PKL)
-df_traj["decade"] = (df_traj["year"] // 10) * 10
 
 df = pd.merge(df_traj, df_len, on=["title", "author"], how="inner")
+df["era"] = df["year"].apply(get_era)
 
 print("\n" + "="*50)
 print("データ件数（2群分類）:")
@@ -198,9 +198,8 @@ for i, cat in enumerate(categories_to_plot):
     cluster_names = {j: f"Shape {chr(65+j)}" for j in range(NUM_CLUSTERS)}
     df_valid["shape_name"] = df_valid["cluster"].map(cluster_names)
     
-    distances_all = kmeans.transform(X_scaled) # 全クラスタとの距離行列 (作品数 x クラスタ数)
-    
-    # 各クラスタへの距離を個別の列として追加
+    # 全クラスタとの距離行列 (作品数 x クラスタ数)
+    distances_all = kmeans.transform(X_scaled)
     dist_cols = []
     for j in range(NUM_CLUSTERS):
         col_name = f"dist_to_{cluster_names[j].replace(' ', '_')}" # 例: dist_to_Shape_A
@@ -209,7 +208,7 @@ for i, cat in enumerate(categories_to_plot):
     df_valid["distance_to_center"] = [distances_all[idx, cluster_idx] for idx, cluster_idx in enumerate(df_valid["cluster"])]
     
     # --- CSV保存用のデータをリストに追加 ---
-    base_cols = ["title", "author", "year", "decade", "length_category", "shape_name", "distance_to_center"]
+    base_cols = ["title", "author", "year", "era", "length_category", "shape_name", "distance_to_center"]
     extracted_df = df_valid[base_cols + dist_cols].copy()
     all_cluster_results.append(extracted_df)
 
@@ -229,22 +228,23 @@ for i, cat in enumerate(categories_to_plot):
     df_valid["distance_to_center"] = [distances[idx, cluster_idx] for idx, cluster_idx in enumerate(df_valid["cluster"])]
   
     print("\n" + "="*60)
-    print(f"【{cat}】年代別・波形別の代表作トップ5")
+    print(f"【{cat}】時代別・波形別の代表作トップ5")
     print("="*60)
     
-    decades = sorted(df_valid["decade"].unique())
-    for d in decades:
-        print(f"\n--- {d}年代 ---")
+    # 時代順に並べるため ERA_LABELS のキー順を使用
+    eras = [e for e in ERA_LABELS.keys() if e in df_valid["era"].unique()]
+    for era in eras:
+        print(f"\n--- {era} ---")
         for j in range(NUM_CLUSTERS):
             shape = cluster_names[j]
-            top_works = df_valid[(df_valid["decade"] == d) & (df_valid["shape_name"] == shape)].sort_values("distance_to_center").head(5)
+            top_works = df_valid[(df_valid["era"] == era) & (df_valid["shape_name"] == shape)].sort_values("distance_to_center").head(5)
             
             if len(top_works) == 0:
                 continue
             
             print(f"  [{shape}]")
             for rank, (_, row) in enumerate(top_works.iterrows(), 1):
-                print(f"    {rank}位: 『{row['title']}』 ({row['author']}) [距離: {row['distance_to_center']:.4f}]")
+                print(f"  -{rank}位: 『{row['title']}』{row['author']} [距離: {row['distance_to_center']:.4f}]")
 
     # ===== 描画処理 =====
     ax_shape = axes[i, 0]
@@ -275,15 +275,18 @@ for i, cat in enumerate(categories_to_plot):
     ax_shape.legend(loc="lower right", fontsize=9)
     
     ax_dist = axes[i, 1]
-    cross_tab = pd.crosstab(df_valid["decade"], df_valid["shape_name"])
+    cross_tab = pd.crosstab(df_valid["era"], df_valid["shape_name"])
+    ordered_eras = [e for e in ERA_LABELS.keys() if e in cross_tab.index]
+    cross_tab = cross_tab.reindex(index=ordered_eras)
     cross_tab_pct = cross_tab.div(cross_tab.sum(axis=1), axis=0).fillna(0) * 100
     cross_tab_pct = cross_tab_pct.reindex(columns=shape_order).fillna(0)
     cross_tab_pct.plot(kind="bar", stacked=True, color=colors, ax=ax_dist, edgecolor="black", width=0.8)
-    ax_dist.set_title(f"【{cat}】年代別: 波形の出現割合", fontsize=14)
+    
+    ax_dist.set_title(f"【{cat}】時代別: 波形の出現割合", fontsize=14)
     ax_dist.set_ylabel("割合 (%)", fontsize=11)
     ax_dist.tick_params(axis='x', rotation=45)
     if i == 1:
-        ax_dist.set_xlabel("年代 (Decade)", fontsize=12)
+        ax_dist.set_xlabel("時代(era)", fontsize=12)
     else:
         ax_dist.set_xlabel("")
     ax_dist.legend(title="波形", bbox_to_anchor=(1.05, 1), loc='upper left')
