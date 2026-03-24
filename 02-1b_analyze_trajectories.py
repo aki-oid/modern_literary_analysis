@@ -244,7 +244,7 @@ for i, cat in enumerate(categories_to_plot):
             
             print(f"  [{shape}]")
             for rank, (_, row) in enumerate(top_works.iterrows(), 1):
-                print(f"  -{rank}位: 『{row['title']}』{row['author']} [距離: {row['distance_to_center']:.4f}]")
+                print(f"  {rank}位: 『{row['title']}』{row['author']}[距離: {row['distance_to_center']:.4f}]")
 
     # ===== 描画処理 =====
     ax_shape = axes[i, 0]
@@ -301,8 +301,37 @@ print(f"\n保存完了: {os.path.join(PLOT_DIR, f'{ID_FILE}_Shape_Comparison.png
 df_final_csv = pd.concat(all_cluster_results, ignore_index=True)
 df_final_csv = df_final_csv.sort_values(by=["length_category", "shape_name", "distance_to_center"])
 df_final_csv.to_csv(OUTPUT_CSV, index=False, encoding="utf-8-sig")
-
 print(f"CSV保存完了: {OUTPUT_CSV}")
+
+# ===== 5. 著者ごとのシェイプ出現回数ランキングの算出 =====
+print("\n" + "="*50)
+print("【著者別】シェイプ出現回数ランキング20（占有率付）")
+print("="*50)
+
+author_total_counts = df_final_csv.groupby(['length_category', 'author']).size().reset_index(name='author_total')
+ranking_df = df_final_csv.groupby(['length_category', 'shape_name', 'author']).size().reset_index(name='count')
+ranking_df = pd.merge(ranking_df, author_total_counts, on=['length_category', 'author'])
+ranking_df['percentage'] = (ranking_df['count'] / ranking_df['author_total']) * 100
+ranking_df = ranking_df.sort_values(['length_category', 'shape_name', 'count', 'percentage'], ascending=[True, True, False, False])
+ranking_df['rank'] = ranking_df.groupby(['length_category', 'shape_name']).cumcount() + 1
+
+current_cat = ""
+current_shape = ""
+
+for _, row in ranking_df.iterrows():
+    if row['rank'] > 20:
+        continue
+        
+    if current_cat != row['length_category'] or current_shape != row['shape_name']:
+        current_cat = row['length_category']
+        current_shape = row['shape_name']
+        print(f"\n--- {current_cat} {current_shape}---")
+    
+    # フォーマット: [順位] [カテゴリ] [シェイプ] [著者] [[回数]回, [割合]%]
+    print(f"{row['rank']:>2}位: {row['author']}[{row['count']}回, {row['percentage']:.1f}%]")
+
+# CSVとしても保存したい場合（オプション）
+# ranking_df.to_csv(f"{ID_FILE}_author_shape_ranking.csv", index=False, encoding="utf-8-sig")
 print("\n"+"="*50)
 print("すべての処理が完了しました。")
 print("="*50)

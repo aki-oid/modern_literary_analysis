@@ -16,13 +16,13 @@ def load_and_merge():
     
     # 3. 結合 (Merge) 
     print("データを統合(JOIN)しています...")
-    master = pd.merge(df_shape, df_morph, on=["title", "author"], how="inner")
+    master = pd.merge(df_shape, df_morph, on=["title", "author", "year"], how="inner")
     
     # 次に「トピック」を結合
     master = pd.merge(
         master, 
         df_topic, 
-        on=["title", "author"], 
+        on=["title", "author", "year"], 
         how="inner", 
         suffixes=('', '_drop')
     )
@@ -34,7 +34,7 @@ def load_and_merge():
     # メタデータ -> 構造 -> 内容 -> スタイル の順に整理
     metadata_cols = ["title", "author", "year", "era", "length_category"]
     shape_cols = ["shape_name", "distance_to_center"]+ [c for c in master.columns if c.startswith("dist_to_")]
-    topic_cols = ["Primary_Topic", "Primary_Topic_prob"] + [c for c in master.columns if "Topic_" in c]
+    topic_cols = ["Primary_Topic", "Primary_Prob"] + [c for c in master.columns if "Topic_" in c]
     morph_cols = [c for c in master.columns if c not in metadata_cols + shape_cols + topic_cols]
     
     final_cols = metadata_cols + shape_cols + topic_cols + morph_cols

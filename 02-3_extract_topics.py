@@ -133,7 +133,7 @@ for i in range(NUM_TOPICS):
 # トピック分布のDataFrame結合
 topic_cols = [f"Topic_{i}" for i in range(NUM_TOPICS)]
 df["Primary_Topic"] = df[topic_cols].idxmax(axis=1)
-df["Primary_Topic_prob"] = df[topic_cols].max(axis=1)
+df["Primary_Prob"] = df[topic_cols].max(axis=1)
 
 drop_cols = ["text_original","text_normalized","text_no_person","person_names","processed_text"]
 df_output = df.drop(columns=drop_cols, errors='ignore')
