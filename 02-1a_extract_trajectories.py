@@ -40,31 +40,57 @@ def sentence_split(text):
     sents = re.split(r"[。！？\n]", text)
     return [s.strip() for s in sents if len(s.strip()) > 5]
 
+# ===== 1. sentence split (長文の強制分割対応) =====
+def sentence_split(text, max_length=100):
+    """
+    句点や改行で分割し、それでも長すぎる文は max_length で強制分割する安全設計
+    """
+    # 1. まず句点や改行でざっくり分割
+    raw_sents = re.split(r"[。！？\n]", text)
+    
+    processed_sents = []
+    for s in raw_sents:
+        s = s.strip()
+        if len(s) == 0:
+            continue
+            
+        # 2. 「。」がない異常に長い文（150文字超過）を強制的に叩き切る
+        if len(s) > max_length:
+            for i in range(0, len(s), max_length):
+                chunk = s[i:i+max_length]
+                if len(chunk) > 5: # 短すぎる破片（5文字以下）は除外
+                    processed_sents.append(chunk)
+        else:
+            if len(s) > 5:
+                processed_sents.append(s)
+                
+    return processed_sents
+
 # ===== 軌跡ベクトル（Trajectory）の取得 =====
 def get_trajectory_embeddings(text):
     sentences = sentence_split(text)
     
     # 短すぎるテキストは除外（20分割できないため）
     if len(sentences) < NUM_SEGMENTS:
-        return None
+        return None, f"有効な文が不足 ({len(sentences)}文 / 必要数: {NUM_SEGMENTS})"
         
-    # 文のリストを20個のセグメントに均等分割
-    segments = np.array_split(sentences, NUM_SEGMENTS)
-    
-    trajectory = []
-    
-    with torch.no_grad():
-        for seg in segments:
-            # セグメント内の各文をベクトル化
-            embs = model.encode(
-                seg.tolist(),
-                convert_to_numpy=True,
-                show_progress_bar=False,
-                normalize_embeddings=False
-            )
-            
-            # セグメントの意味的重心（平均ベクトル）を計算
-            seg_vec = np.mean(embs, axis=0)
+    try:
+        # 【爆速化】forループを廃止し、全文章を一括でエンコード
+        all_embs = model.encode(
+            sentences,
+            batch_size=64, 
+            convert_to_numpy=True,
+            show_progress_bar=False,
+            normalize_embeddings=False
+        )
+        
+        # エンコード済みの配列を NUM_SEGMENTS 個の塊に均等分割
+        segments_embs = np.array_split(all_embs, NUM_SEGMENTS)
+        
+        trajectory = []
+        for seg_emb in segments_embs:
+            # セグメント内の全ベクトルの平均（重心）を計算
+            seg_vec = np.mean(seg_emb, axis=0)
             
             # 単位ベクトルに正規化（コサイン類似度計算のため）
             norm = np.linalg.norm(seg_vec)
@@ -75,8 +101,10 @@ def get_trajectory_embeddings(text):
                 
             trajectory.append(seg_vec)
             
-    # shape: (20, 768) の配列を返す
-    return np.array(trajectory)
+        return np.array(trajectory), "成功"
+        
+    except Exception as e:
+        return None, f"エンコード中にエラー発生: {str(e)}"
 
 # ===== dataset load =====
 if not os.path.exists(INPUT_JSON):
@@ -88,10 +116,10 @@ with open(INPUT_JSON, "r", encoding="utf-8") as f:
 print(f"解析開始: {len(dataset)}件 (各作品を{NUM_SEGMENTS}分割します)")
 
 features = []
-
+skipped_records = [] # スキップされた作品の救済用ログ
 for data in tqdm(dataset):
     text = data.get("text_normalized", "")
-    trajectory_matrix = get_trajectory_embeddings(text)
+    trajectory_matrix, status_msg = get_trajectory_embeddings(text)
     
     if trajectory_matrix is not None:
         features.append({
@@ -100,10 +128,27 @@ for data in tqdm(dataset):
             "year": data["year"],
             "trajectory": trajectory_matrix # 20個のベクトルのリスト
         })
+    else:
+        # 失敗した作品はログに記録
+        skipped_records.append({
+            "title": data.get("title", "不明"),
+            "author": data.get("author", "不明"),
+            "reason": status_msg
+        })
 
+# ===== 4. データの保存 =====
 df_features = pd.DataFrame(features)
 df_features.to_pickle(OUTPUT_PKL)
-print(f"保存完了: {OUTPUT_PKL}")
+print(f"保存完了: {OUTPUT_PKL} (成功: {len(df_features)}件)")
+
+# スキップされたデータの保存（安全対策）
+if len(skipped_records) > 0:
+    df_skipped = pd.DataFrame(skipped_records)
+    skipped_csv_path = OUTPUT_PKL.replace(".pkl", "_skipped_log.csv")
+    df_skipped.to_csv(skipped_csv_path, index=False, encoding="utf-8-sig")
+    print(f"警告: {len(skipped_records)}件の作品がスキップされました。詳細は {skipped_csv_path} を確認してください。")
+else:
+    print("すべての作品が正常に処理されました！")
 
 # ===== Plot: 物語の軌跡の可視化 =====
 print("\n軌跡のプロットを生成します...")

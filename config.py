@@ -11,6 +11,7 @@ os.makedirs(PLOT_DIR, exist_ok=True)
 D00_KANJI_MAPPING = os.path.join(DATA_DIR, "00_kanji_mapping.json")
 D00_INPUT_DATA = os.path.join(DATA_INPUT_DIR, "list_person_all_extended_utf8.csv")
 D01_LITERATURE = os.path.join(DATA_DIR, "01_literature.json")
+D02_INPUT_THOUGHT = os.path.join(DATA_INPUT_DIR, "group-thoughts.json")
 
 D021a_TRAJECTORY = os.path.join(DATA_DIR, "02-1a_narrative_trajectories.pkl")
 D021b_TRAJECTORY = os.path.join(DATA_DIR, "02-1b_clustering_results.csv")
@@ -25,8 +26,8 @@ YEAR_MAX = 1975
 ERA_LABELS = {
     "明治": (1868, 1912),
     "大正": (1912, 1926),
-    "昭和初期": (1926, 1945),
-    "昭和後期": (1945, 1989)
+    "昭和戦前": (1926, 1945),
+    "昭和戦後": (1945, 1989)
 }
 def get_era(year):
     for era, (start, end) in ERA_LABELS.items():

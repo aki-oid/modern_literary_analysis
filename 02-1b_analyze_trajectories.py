@@ -13,6 +13,7 @@ from config import *
 # ===== config =====
 INPUT_JSON = D01_LITERATURE
 INPUT_PKL = D021a_TRAJECTORY
+INPUT_THOUGHT = D02_INPUT_THOUGHT
 OUTPUT_CSV = D021b_TRAJECTORY
 ID_FILE = get_file_prefix(os.path.basename(__file__))
 
@@ -327,11 +328,80 @@ for _, row in ranking_df.iterrows():
         current_shape = row['shape_name']
         print(f"\n--- {current_cat} {current_shape}---")
     
-    # フォーマット: [順位] [カテゴリ] [シェイプ] [著者] [[回数]回, [割合]%]
     print(f"{row['rank']:>2}位: {row['author']}[{row['count']}回, {row['percentage']:.1f}%]")
 
-# CSVとしても保存したい場合（オプション）
-# ranking_df.to_csv(f"{ID_FILE}_author_shape_ranking.csv", index=False, encoding="utf-8-sig")
-print("\n"+"="*50)
+# ===== 6. 派閥適合性チェック (Faction Alignment Check) =====
+print("\n" + "="*50)
+print(f"JSONデータを読み込み中: {INPUT_THOUGHT}")
+with open(INPUT_THOUGHT, "r", encoding="utf-8") as f:
+    thought_data = json.load(f)
+print("【シェイプ別】派閥・名乗り判定チェック（閾値：40%以上）")
+print("="*50)
+
+# 1. 思考データ（JSON）を作家単位の逆引き辞書に変換
+# 複数の派閥にまたがる作家も考慮する
+author_to_faction = {}
+faction_metadata = {}
+
+for faction, info in thought_data.items():
+    persons = [p.strip() for p in info["person"].split(",")]
+    faction_label = f"{faction}({info['sub_label']})" if info['sub_label'] else faction
+    faction_metadata[faction] = faction_label
+    
+    for p in persons:
+        if p not in author_to_faction:
+            author_to_faction[p] = []
+        author_to_faction[p].append(faction)
+
+# 2. クラスタリング結果に派閥情報を紐付け
+# 作家が複数派閥を持つ場合、行を複製してカウント（exploded join）
+faction_analysis_list = []
+for _, row in df_final_csv.iterrows():
+    factions = author_to_faction.get(row['author'], ["無所属"])
+    for f in factions:
+        faction_analysis_list.append({
+            "length_category": row["length_category"],
+            "shape_name": row["shape_name"],
+            "faction": f
+        })
+
+df_faction = pd.DataFrame(faction_analysis_list)
+
+# 3. シェイプごとの集計
+# シェイプ内の総作品数（分母）を計算
+shape_totals = df_faction.groupby(['length_category', 'shape_name']).size().reset_index(name='shape_total')
+
+# シェイプ内の派閥別作品数を計算
+faction_counts = df_faction.groupby(['length_category', 'shape_name', 'faction']).size().reset_index(name='faction_count')
+alignment_df = pd.merge(faction_counts, shape_totals, on=['length_category', 'shape_name'])
+alignment_df['faction_ratio'] = alignment_df['faction_count'] / alignment_df['shape_total']
+
+# 4. 判定と出力（次点表示版）
+for cat in categories_to_plot:
+    print(f"\n>>> カテゴリ：{cat}")
+    cat_df = alignment_df[alignment_df['length_category'] == cat]
+    
+    for shape in sorted(cat_df['shape_name'].unique()):
+        shape_df = cat_df[cat_df['shape_name'] == shape].sort_values('faction_ratio', ascending=False)
+        
+        print(f"  [{shape}]")
+        if shape_df.empty:
+            print("    (データなし)")
+            continue
+        
+        top_1 = shape_df.iloc[0]
+        top_2 = shape_df.iloc[1] if len(shape_df) > 1 else None
+        
+        if top_1['faction'] != "無所属" and top_1['faction_ratio'] >= 0.4:
+            f_name = faction_metadata.get(top_1['faction'], top_1['faction'])
+            print(f"    認定：【{f_name}】の派閥と認定（含有率: {top_1['faction_ratio']*100:.1f}%）")
+        else:
+            print(f"    特定の派閥とは認定不可")
+            f1_name = faction_metadata.get(top_1['faction'], top_1['faction'])
+            print(f"      - 最大勢力: {f1_name} ({top_1['faction_ratio']*100:.1f}%)")
+            
+            if top_2 is not None:
+                f2_name = faction_metadata.get(top_2['faction'], top_2['faction'])
+                print(f"      - 次点派閥: {f2_name} ({top_2['faction_ratio']*100:.1f}%)")
 print("すべての処理が完了しました。")
 print("="*50)

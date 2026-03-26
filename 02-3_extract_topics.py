@@ -16,13 +16,14 @@ from config import *
 # ===== config =====
 INPUT_JSON = D01_LITERATURE
 INPUT_STOPWORDS = "data/INPUT/slothlib.txt"
+INPUT_THOUGHT = D02_INPUT_THOUGHT
 OUTPUT_CSV = D023_TOPIC
 OUTPUT_SUMMARY_CSV = os.path.join(DATA_DIR, "02-3-2_topic_summary.csv")
 ID_FILE = get_file_prefix(os.path.basename(__file__))
 
 CONFIG = {
     "random_seed": 42,
-    "max_iter": 200,  # EMアルゴリズムが十分収束する反復回数
+    "max_iter": 300,  # EMアルゴリズムが十分収束する反復回数
 }
 plt.rcParams['font.family'] = 'MS Gothic' # 環境に合わせて調整
 
@@ -62,16 +63,18 @@ def extract_academic_lemmas(text):
     for word in tagger(text):
         pos = word.feature.pos1
         pos_detail = word.feature.pos2
+        # UniDicの語彙素(lemma)を取得。なければ表層形
+        lemma = word.feature.lemma if word.feature.lemma else word.surface
+        # ハイフン区切りの語彙素（例：見上げる-見る）から先頭を取得
+        lemma = lemma.split("-")[0] 
         
+        # 特殊トークンの保護
+        if "[PERSON]" in text and word.surface in ["[", "person", "]"]:
+            continue
         # 抽出対象：意味を担う内容語に限定
         if pos in ["名詞"]:#, "動詞", "形容詞"
             # 除外対象：分析にノイズを与える機能語的要素
             if pos_detail not in ["数詞", "代名詞", "非自立", "接尾"]:
-                # UniDicの語彙素(lemma)を取得。なければ表層形
-                lemma = word.feature.lemma if word.feature.lemma else word.surface
-                # ハイフン区切りの語彙素（例：見上げる-見る）から先頭を取得
-                lemma = lemma.split("-")[0] 
-                
                 # 長さ制約とストップワード処理
                 if len(lemma) > 1 and lemma not in STOP_WORDS:
                     tokens.append(lemma)
@@ -89,9 +92,9 @@ df["processed_text"] = df["text_no_person"].progress_apply(extract_academic_lemm
 # ===== 3. 統計的モデル構築：LDA（Probabilistic Topic Modeling） =====
 # 文書頻度（DF）に基づく次元削減（Zipfの法則に基づくカットオフ）
 vectorizer = CountVectorizer(
-    max_df=0.6,  # コーパスの60%以上に出現する一般的な語（ストップワード漏れ等）を排除
+    max_df=0.7,  # コーパスの70%以上に出現する一般的な語（ストップワード漏れ等）を排除
     min_df=0.01,    # 5文書未満にしか出現しない低頻度語（外れ値・誤字）を排除
-    max_features=3300 # 特徴量空間の適正化
+    max_features=3500 # 特徴量空間の適正化
 )
 dtm = vectorizer.fit_transform(df["processed_text"])
 
@@ -109,6 +112,8 @@ lda = LatentDirichletAllocation(
 doc_topic_dist = lda.fit_transform(dtm)
 
 # 訓練データに対する評価指標
+print(f"Vocabulary size: {dtm.shape[1]}")
+print(f"Total word count: {dtm.sum()}")
 print(f"Training Log Likelihood: {lda.score(dtm):.2f}")
 print(f"Training Perplexity: {lda.perplexity(dtm):.2f}")
 
@@ -212,14 +217,81 @@ df_summary = pd.DataFrame(summary_rows)
 df_summary.to_csv(OUTPUT_SUMMARY_CSV, index=False, encoding="utf-8-sig")
 print(f"完了！サマリーを {OUTPUT_SUMMARY_CSV} に保存しました。")
 
-# ===== 7. トピック数 K の評価（Model Selection） =====
-# 候補となるトピック数の範囲
+# ===== 7. トピック別・派閥認定チェック (Topic-Faction Alignment) =====
+print("\n" + "="*60)
+print("【トピック別】派閥・名乗り判定チェック（閾値：40%以上）")
+print("="*60)
+
+print(f"JSONデータを読み込み中: {INPUT_THOUGHT}")
+with open(INPUT_THOUGHT, "r", encoding="utf-8") as f:
+    thought_data = json.load(f)
+
+# 1. 思考データ（JSON）を作家単位の逆引き辞書に変換
+author_to_faction = {}
+faction_metadata = {}
+
+for faction, info in thought_data.items():
+    persons = [p.strip() for p in info["person"].split(",")]
+    faction_label = f"{faction}({info['sub_label']})" if info['sub_label'] else faction
+    faction_metadata[faction] = faction_label
+    for p in persons:
+        if p not in author_to_faction:
+            author_to_faction[p] = []
+        author_to_faction[p].append(faction)
+
+# 2. LDAの結果（Primary_Topic）と派閥を紐付け
+topic_faction_list = []
+for _, row in df_filtered.iterrows():
+    factions = author_to_faction.get(row['author'], ["無所属"])
+    for f in factions:
+        topic_faction_list.append({
+            "topic_id": row["Primary_Topic"],
+            "faction": f
+        })
+
+df_tf = pd.DataFrame(topic_faction_list)
+
+# 3. トピックごとの集計
+topic_totals = df_tf.groupby('topic_id').size().reset_index(name='topic_total')
+tf_counts = df_tf.groupby(['topic_id', 'faction']).size().reset_index(name='count')
+tf_alignment = pd.merge(tf_counts, topic_totals, on='topic_id')
+tf_alignment['ratio'] = tf_alignment['count'] / tf_alignment['topic_total']
+
+# 4. 判定と出力
+for i in range(NUM_TOPICS):
+    t_id = f"Topic_{i}"
+    t_label = topic_labels[i]
+    print(f">>> {t_label}")
+    
+    # 該当トピックのデータを抽出
+    res = tf_alignment[tf_alignment['topic_id'] == t_id].sort_values('ratio', ascending=False)
+    
+    if res.empty:
+        print("    (該当作品なし)")
+        continue
+        
+    # 4割以上の派閥をチェック
+    winners = res[(res['ratio'] >= 0.4) & (res['faction'] != "無所属")]
+    
+    if not winners.empty:
+        for _, w in winners.iterrows():
+            f_full_name = faction_metadata.get(w['faction'], w['faction'])
+            print(f"    ★ 認定：このトピックは【{f_full_name}】の専売特許です。（派閥含有率: {w['ratio']*100:.1f}%）")
+    else:
+        top_f = res.iloc[0]
+        # 無所属が最大の場、2番目の派閥も参考表示
+        print(f"    × 認定不可（最大勢力: {top_f['faction']} {top_f['ratio']*100:.1f}%）")
+
+    second_f = res.iloc[1]
+    print(f"    （次点派閥: {second_f['faction']} {second_f['ratio']*100:.1f}%）")
+
+print("\n" + "="*60)
+# ===== 8. トピック数 K の評価（Model Selection） =====
 k_candidates = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20]
 perplexity_scores = []
 log_likelihood_scores = []
 
 print("\nSearching for the optimal number of topics (K)...")
-
 # 学術的妥当性：過学習を防ぐため、モデル評価は必ずホールドアウト（テスト）データで行う
 dtm_train, dtm_test = train_test_split(dtm, test_size=0.2, random_state=CONFIG["random_seed"])
 
@@ -238,7 +310,7 @@ for k in tqdm(k_candidates, desc="Evaluating K"):
     log_likelihood_scores.append(lda_eval.score(dtm_test))
     perplexity_scores.append(lda_eval.perplexity(dtm_test))
 
-# ===== 8. 評価指標の可視化（Elbow Method） =====
+# ===== 9. 評価指標の可視化（Elbow Method） =====
 fig, ax1 = plt.subplots(figsize=(10, 6))
 
 # Log-Likelihoodのプロット（高いほど良い）
