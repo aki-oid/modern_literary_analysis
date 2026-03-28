@@ -37,7 +37,7 @@ def get_era(year):
 
 NUM_CLUSTERS = 5
 NUM_SEGMENTS = 20
-NUM_TOPICS = 14
+NUM_TOPICS = 18
 
 def get_file_prefix(path):
     # ファイルパスからファイル名（02-1b_... .pkl）だけを取り出す

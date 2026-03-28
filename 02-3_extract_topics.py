@@ -284,6 +284,8 @@ for i in range(NUM_TOPICS):
 
     second_f = res.iloc[1]
     print(f"    （次点派閥: {second_f['faction']} {second_f['ratio']*100:.1f}%）")
+    third_f = res.iloc[2] if len(res) > 2 else None
+    print(f"    （3位派閥: {third_f['faction']} {third_f['ratio']*100:.1f}%）" if third_f is not None else "    （3位派閥: 該当なし）")
 
 print("\n" + "="*60)
 # ===== 8. トピック数 K の評価（Model Selection） =====
@@ -303,7 +305,6 @@ for k in tqdm(k_candidates, desc="Evaluating K"):
         random_state=CONFIG["random_seed"],
         n_jobs=-1
     )
-    # 学習は訓練データでのみ実行
     lda_eval.fit(dtm_train)
     
     # 評価は未知のテストデータに対して実行（汎化性能の計測）
